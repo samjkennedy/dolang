@@ -170,6 +170,8 @@ fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
         ("sort".to_string(), TokenKind::SortKeyword),
         ("reverse".to_string(), TokenKind::ReverseKeyword),
         ("max".to_string(), TokenKind::MaxKeyword),
+        //Meta
+        ("???".to_string(), TokenKind::QuestionQuestionQuestion),
     ]);
 
     let mut int_cache: HashMap<&str, i64> = HashMap::new();
@@ -178,8 +180,13 @@ fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
         let row = zero_row + 1;
         let mut col = 0;
 
-        while col < line.chars().count() {
-            let c = line.chars().nth(col).unwrap();
+        let mut chars = line.chars().peekable();
+
+        while col < line.len() {
+            let c = match chars.next() {
+                Some(next) => next,
+                None => '\n',
+            };
             if c == '+' {
                 tokens.push(Token {
                     kind: TokenKind::Plus,
@@ -191,8 +198,8 @@ fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
                 });
                 col += 1;
             } else if c == '-' {
-                if let Some(next) = line.chars().nth(col + 1) {
-                    if next == '-' {
+                if let Some(next) = chars.peek() {
+                    if *next == '-' {
                         tokens.push(Token {
                             kind: TokenKind::DashDash,
                             span: Span {
@@ -355,24 +362,6 @@ fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
                     },
                 });
                 col = line.chars().count();
-            } else if c == '?' {
-                if let Some(next) = line.chars().nth(col + 1) {
-                    if next == '?' {
-                        if let Some(next) = line.chars().nth(col + 2) {
-                            if next == '?' {
-                                tokens.push(Token {
-                                    kind: TokenKind::QuestionQuestionQuestion,
-                                    span: Span {
-                                        row,
-                                        col: col + 1,
-                                        len: 3,
-                                    },
-                                });
-                                col += 3;
-                            }
-                        }
-                    }
-                }
             // } else if c == '"' {
             //     let mut s = line.chars().nth(col + 1).unwrap();
             //     col += 1;
@@ -391,6 +380,9 @@ fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
             //             col: start_col,
             //             len: acc.chars().count(),
             //         },
+            //             file: file.clone(),
+            //         },
+            //         text: acc,
             //     });
             } else if c.is_numeric() && line.chars().nth(col).is_some() {
                 let mut n = c;
@@ -432,7 +424,7 @@ fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
                         len: col - (start_col - 1),
                     },
                 });
-            } else if c.is_alphabetic() {
+            } else if c.is_alphabetic() || c == '?' {
                 let mut a = c;
                 let start_col = col + 1;
                 while !a.is_whitespace()
