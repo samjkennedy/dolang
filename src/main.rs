@@ -12,12 +12,12 @@ use std::ops::Rem;
 use std::ops::Sub;
 use std::vec;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+//TODO: This doesn't handle multiline spans, switch to start byte and end byte or start byte and length
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Span {
     row: usize,
     col: usize,
     len: usize,
-    file: String,
 }
 
 impl Span {
@@ -26,7 +26,6 @@ impl Span {
             row: 0,
             col: 0,
             len: 0,
-            file: "".to_string(),
         };
     }
 
@@ -35,14 +34,13 @@ impl Span {
             row: start.row,
             col: start.col - 1,
             len: end.col + 2 - start.col,
-            file: start.file,
         };
     }
 }
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{}:{}", self.file, self.row, self.col)
+        write!(f, "{}:{}", self.row, self.col)
     }
 }
 
@@ -51,8 +49,8 @@ enum TokenKind {
     WhiteSpace,
     Comment,
     Identifier,
-    NumberLiteral,
-    StringLiteral,
+    NumberLiteral(i64),
+    //StringLiteral,
     TrueLiteral,
     FalseLiteral,
     Plus,
@@ -76,7 +74,7 @@ enum TokenKind {
     DefineKeyword,
     IfKeyword,
     WhileKeyword,
-    ImportKeyword,
+    //ImportKeyword,
 
     //Syntax
     OpenSquareBrace,
@@ -110,11 +108,10 @@ enum TokenKind {
     ReverseKeyword,
     MaxKeyword,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct Token {
     kind: TokenKind,
     span: Span,
-    text: String,
 }
 
 #[derive(Debug)]
@@ -132,7 +129,7 @@ impl fmt::Display for LexingError {
     }
 }
 
-fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
+fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
     let mut tokens: Vec<Token> = vec![];
 
     let keywords = HashMap::from([
@@ -150,7 +147,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
         ("define".to_string(), TokenKind::DefineKeyword),
         ("if".to_string(), TokenKind::IfKeyword),
         ("while".to_string(), TokenKind::WhileKeyword),
-        ("import".to_string(), TokenKind::ImportKeyword),
+        //("import".to_string(), TokenKind::ImportKeyword),
         //Types
         ("int".to_string(), TokenKind::IntKeyword),
         ("bool".to_string(), TokenKind::BoolKeyword),
@@ -175,6 +172,8 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
         ("max".to_string(), TokenKind::MaxKeyword),
     ]);
 
+    let mut int_cache: HashMap<&str, i64> = HashMap::new();
+
     for (zero_row, line) in input.split("\n").enumerate() {
         let row = zero_row + 1;
         let mut col = 0;
@@ -188,9 +187,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "+".to_string(),
                 });
                 col += 1;
             } else if c == '-' {
@@ -202,9 +199,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                                 row,
                                 col: col + 1,
                                 len: 2,
-                                file: file.clone(),
                             },
-                            text: "--".to_string(),
                         });
                         col += 2;
                     } else {
@@ -214,9 +209,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                                 row,
                                 col: col + 1,
                                 len: 1,
-                                file: file.clone(),
                             },
-                            text: "-".to_string(),
                         });
                         col += 1;
                     }
@@ -228,9 +221,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "*".to_string(),
                 });
                 col += 1;
             } else if c == '/' {
@@ -240,9 +231,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "/".to_string(),
                 });
                 col += 1;
             } else if c == '%' {
@@ -252,9 +241,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "%".to_string(),
                 });
                 col += 1;
             } else if c == '>' {
@@ -264,9 +251,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: ">".to_string(),
                 });
                 col += 1;
             } else if c == '<' {
@@ -276,9 +261,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "<".to_string(),
                 });
                 col += 1;
             } else if c == '=' {
@@ -288,9 +271,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "=".to_string(),
                 });
                 col += 1;
             } else if c == '!' {
@@ -300,9 +281,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "!".to_string(),
                 });
                 col += 1;
             } else if c == '&' {
@@ -312,9 +291,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "&".to_string(),
                 });
                 col += 1;
             } else if c == '|' {
@@ -324,9 +301,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "|".to_string(),
                 });
                 col += 1;
             } else if c == '[' {
@@ -336,9 +311,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "[".to_string(),
                 });
                 col += 1;
             } else if c == ']' {
@@ -348,9 +321,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "]".to_string(),
                 });
                 col += 1;
             } else if c == '(' {
@@ -360,9 +331,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: "(".to_string(),
                 });
                 col += 1;
             } else if c == ')' {
@@ -372,9 +341,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
-                    text: ")".to_string(),
                 });
                 col += 1;
             } else if c == '#' {
@@ -385,9 +352,7 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: comment.chars().count(),
-                        file: file.clone(),
                     },
-                    text: comment.to_string(),
                 });
                 col = line.chars().count();
             } else if c == '?' {
@@ -401,61 +366,61 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                                         row,
                                         col: col + 1,
                                         len: 3,
-                                        file: file.clone(),
                                     },
-                                    text: "???".to_string(),
                                 });
                                 col += 3;
                             }
                         }
                     }
                 }
-            } else if c == '"' {
-                let mut s = line.chars().nth(col + 1).unwrap();
-                col += 1;
-                let start_col = col + 1;
-                let mut acc = "".to_string();
-                while s != '"' && line.chars().nth(col).is_some() {
-                    acc.push(s);
-                    col += 1;
-                    s = line.chars().nth(col).or(Some('"')).unwrap();
-                }
-                col += 1;
-                tokens.push(Token {
-                    kind: TokenKind::StringLiteral,
-                    span: Span {
-                        row,
-                        col: start_col,
-                        len: acc.chars().count(),
-                        file: file.clone(),
-                    },
-                    text: acc,
-                });
+            // } else if c == '"' {
+            //     let mut s = line.chars().nth(col + 1).unwrap();
+            //     col += 1;
+            //     let start_col = col + 1;
+            //     let mut acc = "".to_string();
+            //     while s != '"' && line.chars().nth(col).is_some() {
+            //         acc.push(s);
+            //         col += 1;
+            //         s = line.chars().nth(col).or(Some('"')).unwrap();
+            //     }
+            //     col += 1;
+            //     tokens.push(Token {
+            //         kind: TokenKind::StringLiteral,
+            //         span: Span {
+            //             row,
+            //             col: start_col,
+            //             len: acc.chars().count(),
+            //         },
+            //     });
             } else if c.is_numeric() && line.chars().nth(col).is_some() {
                 let mut n = c;
                 let start_col = col + 1;
-                let mut acc = "".to_string();
                 while n.is_numeric() {
-                    acc.push(n);
                     col += 1;
                     n = line.chars().nth(col).or(Some('\n')).unwrap();
                 }
+                let text = &line[start_col - 1..col];
+
+                let value: i64;
+                if int_cache.contains_key(text) {
+                    value = *int_cache.get(text).unwrap();
+                } else {
+                    value = text.parse::<i64>().unwrap();
+                    int_cache.insert(text, value);
+                }
+
                 tokens.push(Token {
-                    kind: TokenKind::NumberLiteral,
+                    kind: TokenKind::NumberLiteral(value),
                     span: Span {
                         row,
                         col: start_col,
-                        len: acc.chars().count(),
-                        file: file.clone(),
+                        len: text.len(),
                     },
-                    text: acc,
                 });
             } else if c.is_whitespace() {
                 let mut ws = c;
                 let start_col = col + 1;
-                let mut acc = "".to_string();
                 while ws.is_whitespace() && line.chars().nth(col).is_some() {
-                    acc.push(ws);
                     col += 1;
                     ws = line.chars().nth(col).or(Some('\n')).unwrap();
                 }
@@ -464,42 +429,36 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                     span: Span {
                         row,
                         col: start_col,
-                        len: acc.chars().count(),
-                        file: file.clone(),
+                        len: col - (start_col - 1),
                     },
-                    text: acc,
                 });
             } else if c.is_alphabetic() {
                 let mut a = c;
                 let start_col = col + 1;
-                let mut acc = "".to_string();
                 while !a.is_whitespace()
                     && !['[', ']', '(', ')'].contains(&a) //TODO: Have a vec of all reserved characters
                     && line.chars().nth(col).is_some()
                 {
-                    acc.push(a);
                     col += 1;
                     a = line.chars().nth(col).or(Some('\n')).unwrap();
                 }
+                let text = &line[start_col - 1..col];
 
                 //Check for keywords
                 let span = Span {
                     row,
                     col: start_col,
-                    len: acc.chars().count(),
-                    file: file.clone(),
+                    len: col - (start_col - 1),
                 };
-                if keywords.contains_key(&acc) {
+                if keywords.contains_key(text) {
                     tokens.push(Token {
-                        kind: *keywords.get(&acc).unwrap(),
+                        kind: *keywords.get(text).unwrap(),
                         span,
-                        text: acc,
                     })
                 } else {
                     tokens.push(Token {
                         kind: TokenKind::Identifier,
                         span,
-                        text: acc,
                     });
                 }
             } else {
@@ -509,7 +468,6 @@ fn lex(file: String, input: &str) -> Result<Vec<Token>, LexingError> {
                         row,
                         col: col + 1,
                         len: 1,
-                        file: file.clone(),
                     },
                 ));
             }
@@ -546,7 +504,7 @@ enum Operation {
     Run(Span),
     IntegerLiteral(i64, Span),
     BooleanLiteral(bool, Span),
-    StringLiteral(String, Span),
+    //StringLiteral(String, Span),
     Identifier(String, Span),
     Binary(BinaryOperator, Span),
     Unary(UnaryOperator, Span),
@@ -562,7 +520,7 @@ enum Operation {
     Last(Span),
     Init(Span),
     Cons(Span),
-    Import(Vec<Function>, Span),
+    //Import(Vec<Function>, Span),
     Sort(Span),
     DumpTypeStack(Span),
     Reverse(Span),
@@ -608,19 +566,18 @@ enum ParseError {
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ParseError::UnknownIdentifier(identifier, span) => {
-                write!(f, "Unknown identifier `{}` at {}", identifier, span)
+            ParseError::UnknownIdentifier(identifier, _) => {
+                write!(f, "Unknown identifier `{}`", identifier)
             }
-            ParseError::UnexpectedToken(expected, actual, span) => write!(
-                f,
-                "Expected `{:?}` but got {:?} at {}",
-                expected, actual, span
-            ),
+            ParseError::UnexpectedToken(expected, actual, _) => {
+                write!(f, "Expected `{:?}` but got {:?}", expected, actual)
+            }
         }
     }
 }
 
 struct Parser {
+    source: String,
     cursor: usize,
     tokens: Vec<Token>,
     operations: Vec<Operation>,
@@ -628,8 +585,9 @@ struct Parser {
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>) -> Parser {
+    fn new(source: String, tokens: Vec<Token>) -> Parser {
         return Parser {
+            source,
             cursor: 0,
             tokens: tokens
                 .into_iter()
@@ -643,22 +601,19 @@ impl Parser {
     fn parse_operation(&mut self) -> Result<Operation, ParseError> {
         while self.cursor < self.tokens.len() {
             let token = &self.tokens[self.cursor];
-            let span = token.span.clone();
+            let span = token.span;
 
             match token.kind {
                 TokenKind::WhiteSpace | TokenKind::Comment | TokenKind::EndKeyword => {
                     return Ok(Operation::NoOp)
                 }
-                TokenKind::NumberLiteral => {
-                    return Ok(Operation::IntegerLiteral(
-                        token.text.parse::<i64>().unwrap(),
-                        span,
-                    ));
+                TokenKind::NumberLiteral(i) => {
+                    return Ok(Operation::IntegerLiteral(i, span));
                 }
 
-                TokenKind::StringLiteral => {
-                    return Ok(Operation::StringLiteral(token.text.clone(), span));
-                }
+                // TokenKind::StringLiteral => {
+                //     return Ok(Operation::StringLiteral(token.text.clone(), span));
+                // }
                 TokenKind::TrueLiteral => return Ok(Operation::BooleanLiteral(true, span)),
                 TokenKind::FalseLiteral => return Ok(Operation::BooleanLiteral(false, span)),
                 TokenKind::Plus => return Ok(Operation::Binary(BinaryOperator::Add, span)),
@@ -685,35 +640,34 @@ impl Parser {
                 TokenKind::IfKeyword => return Ok(Operation::If(span)),
                 TokenKind::WhileKeyword => return Ok(Operation::While(span)),
 
-                TokenKind::ImportKeyword => {
-                    self.cursor += 1;
-                    let import = self.match_token(TokenKind::StringLiteral)?;
-                    let file_path = ".\\core\\".to_string() + &import.text + &".do".to_string();
+                // TokenKind::ImportKeyword => {
+                //     self.cursor += 1;
+                //     let import = self.match_token(TokenKind::StringLiteral)?;
+                //     let file_path = ".\\core\\".to_string() + &import.text + &".do".to_string();
 
-                    if let Ok(contents) = fs::read_to_string(file_path.clone()) {
-                        let tokens = lex(file_path.clone(), &contents).unwrap(); //TODO: Errors from other files
+                //     if let Ok(contents) = fs::read_to_string(file_path.clone()) {
+                //         let tokens = lex(&contents).unwrap(); //TODO: Errors from other files
 
-                        let mut parser = Parser::new(tokens);
-                        match parser.parse() {
-                            Ok(ops) => {
-                                let mut functions: Vec<Function> = vec![];
-                                for op in ops {
-                                    match op {
-                                        Operation::Define(function, _) => {
-                                            self.functions
-                                                .insert(function.name.clone(), function.clone());
-                                            functions.push(function);
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                return Ok(Operation::Import(functions, span)); //TODO: Replace with Operation::Import(compilation_unit)
-                            }
-                            Err(error) => display_parse_error(error, &contents),
-                        }
-                    }
-                }
-
+                //         let mut parser = Parser::new(tokens);
+                //         match parser.parse() {
+                //             Ok(ops) => {
+                //                 let mut functions: Vec<Function> = vec![];
+                //                 for op in ops {
+                //                     match op {
+                //                         Operation::Define(function, _) => {
+                //                             self.functions
+                //                                 .insert(function.name.clone(), function.clone());
+                //                             functions.push(function);
+                //                         }
+                //                         _ => {}
+                //                     }
+                //                 }
+                //                 return Ok(Operation::Import(functions, span)); //TODO: Replace with Operation::Import(compilation_unit)
+                //             }
+                //             Err(error) => display_parse_error(error, &contents),
+                //         }
+                //     }
+                // }
                 TokenKind::CloseSquareBrace => {
                     unreachable!()
                 }
@@ -733,19 +687,26 @@ impl Parser {
                 TokenKind::ReverseKeyword => return Ok(Operation::Reverse(span)),
                 TokenKind::MaxKeyword => return Ok(Operation::Max(span)),
                 TokenKind::Identifier => {
-                    if self.functions.contains_key(&token.text) {
-                        return Ok(Operation::Identifier(token.text.clone(), span));
+                    let identifier = &self.source.lines().nth(span.row - 1).unwrap()
+                        [span.col - 1..span.col - 1 + span.len]
+                        .to_owned();
+                    if self.functions.contains_key(identifier) {
+                        return Ok(Operation::Identifier(identifier.clone(), span));
                     }
+                    println!("Funcs: {:#?}", self.functions);
                     return Err(ParseError::UnknownIdentifier(
-                        token.text.clone(),
-                        token.span.clone(),
+                        identifier.clone(),
+                        token.span,
                     ));
                 }
                 TokenKind::DefineKeyword => {
                     self.cursor += 1;
-                    let identifier = self.current().clone();
+                    let identifier_token = self.current();
+                    let identifier_span = identifier_token.span;
+                    let identifier = &self.source.lines().nth(identifier_span.row - 1).unwrap()
+                        [identifier_span.col - 1..identifier_span.col - 1 + identifier_span.len]
+                        .to_owned();
 
-                    let name = identifier.text.to_owned();
                     self.cursor += 1;
 
                     //parse signature
@@ -770,9 +731,9 @@ impl Parser {
 
                     //insert dummy for recursion
                     self.functions.insert(
-                        identifier.text.clone(),
+                        identifier.clone(),
                         Function {
-                            name: name.clone(),
+                            name: identifier.clone(),
                             arguments: args.clone(),
                             returns: results.clone(),
                             body: vec![],
@@ -786,13 +747,13 @@ impl Parser {
                         self.cursor += 1;
                     }
                     let function = Function {
-                        name: name.clone(),
-                        arguments: args,
-                        returns: results,
+                        name: identifier.clone(),
+                        arguments: args.clone(),
+                        returns: results.clone(),
                         body,
                     };
-                    self.functions.insert(name, function.clone());
-                    return Ok(Operation::Define(function, identifier.span.clone()));
+                    self.functions.insert(identifier.clone(), function.clone());
+                    return Ok(Operation::Define(function, span));
                 }
                 TokenKind::OpenParenthesis => todo!(),
                 TokenKind::CloseParenthesis => todo!(),
@@ -823,7 +784,7 @@ impl Parser {
             _ => Err(ParseError::UnexpectedToken(
                 TokenKind::DashDash,
                 self.current().kind,
-                self.current().span.clone(),
+                self.current().span,
             )),
         };
         arg_type
@@ -834,11 +795,7 @@ impl Parser {
         if curr.kind == expected {
             return Ok(curr);
         }
-        return Err(ParseError::UnexpectedToken(
-            expected,
-            curr.kind,
-            curr.span.clone(),
-        ));
+        return Err(ParseError::UnexpectedToken(expected, curr.kind, curr.span));
     }
 
     fn parse(&mut self) -> Result<Vec<Operation>, ParseError> {
@@ -854,13 +811,13 @@ impl Parser {
     fn parse_sequence(&mut self) -> Result<Operation, ParseError> {
         let mut operations: Vec<Operation> = vec![];
 
-        let start = self.current().span.clone();
+        let start = self.current().span;
 
         while self.current().kind != TokenKind::CloseSquareBrace {
             operations.push(self.parse_operation()?);
             self.cursor += 1;
         }
-        let end = self.current().span.clone();
+        let end = self.current().span;
 
         return Ok(Operation::Sequence(operations, Span::from(start, end)));
     }
@@ -874,7 +831,6 @@ impl Parser {
 enum Type {
     Int,
     Bool,
-    String,
     List(Box<Type>),
     Function(Vec<Type>, Vec<Type>),
     Any,
@@ -885,7 +841,7 @@ impl Display for Type {
         match self {
             Type::Int => write!(f, "{}", "int"),
             Type::Bool => write!(f, "{}", "bool"),
-            Type::String => write!(f, "{}", "string"),
+            //Type::String => write!(f, "{}", "string"),
             Type::List(el_type) => write!(f, "list of {}", el_type),
             Type::Function(inputs, outputs) => write!(f, "fn ({:?} -- {:?})", inputs, outputs),
             Type::Any => write!(f, "{}", "any"),
@@ -896,7 +852,7 @@ impl Display for Type {
 enum TypeError {
     TypeMismatch(Type, BoundType, Span),
     EmptyStack(Type, Span),
-    NonEmptyStack(TypeStack, String),
+    NonEmptyStack(TypeStack),
     DumpTypeStack(TypeStack, Span),
     IfBranchInputMismatch(Vec<Type>, Vec<Type>, Span),
     IfBranchOutputMismatch(Vec<Type>, Vec<Type>, Span),
@@ -905,25 +861,20 @@ enum TypeError {
 impl fmt::Display for TypeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            TypeError::TypeMismatch(expected, actual, span) => {
+            TypeError::TypeMismatch(expected, actual, _) => {
                 write!(
                     f,
-                    "Type mismatch, expected '{:?}' but the top of the stack was `{:?}` at {}:",
-                    expected, actual.t, span
+                    "Type mismatch, expected '{:?}' but the top of the stack was `{:?}`",
+                    expected, actual.t
                 )
             }
-            TypeError::EmptyStack(expected, span) => {
-                write!(
-                    f,
-                    "Expected '{:?}' but the stack was empty at {}",
-                    expected, span
-                )
+            TypeError::EmptyStack(expected, _) => {
+                write!(f, "Expected '{:?}' but the stack was empty", expected)
             }
-            TypeError::NonEmptyStack(stack, file) => {
+            TypeError::NonEmptyStack(stack) => {
                 write!(
                     f,
-                    "Stack was not empty at the end of file {}\nStack: {:?}",
-                    file,
+                    "Stack was not empty at the end of the file.\nStack: {:?}",
                     stack
                         .type_stack
                         .iter()
@@ -931,11 +882,10 @@ impl fmt::Display for TypeError {
                         .collect::<Vec<Type>>()
                 )
             }
-            TypeError::DumpTypeStack(type_stack, span) => {
+            TypeError::DumpTypeStack(type_stack, _) => {
                 write!(
                     f,
-                    "State of the stack at {}:\n{:?}",
-                    span,
+                    "State of the stack:\n{:?}",
                     type_stack
                         .type_stack
                         .iter()
@@ -943,20 +893,18 @@ impl fmt::Display for TypeError {
                         .collect::<Vec<Type>>()
                 )
             }
-            TypeError::IfBranchInputMismatch(then_inputs, else_inputs, span) => {
+            TypeError::IfBranchInputMismatch(then_inputs, else_inputs, _) => {
                 write!(
                     f,
-                    "Both branches of the `if` expression expect different inputs at {}\n",
-                    span
+                    "Both branches of the `if` expression expect different inputs",
                 )?;
                 write!(f, " Then expects: {:?}\n", then_inputs)?;
                 write!(f, " Else expects: {:?}", else_inputs)
             }
-            TypeError::IfBranchOutputMismatch(then_outputs, else_outputs, span) => {
+            TypeError::IfBranchOutputMismatch(then_outputs, else_outputs, _) => {
                 write!(
                     f,
-                    "Both branches of the `if` expression generate different outputs at {}\n",
-                    span
+                    "Both branches of the `if` expression generate different outputs",
                 )?;
                 write!(f, " Then generates: {:?}\n", then_outputs)?;
                 write!(f, " Else generates: {:?}", else_outputs)
@@ -1051,9 +999,9 @@ impl TypeChecker {
                             *expected_el_type,
                             Some(BoundType {
                                 t: *actual_el_type,
-                                span: span.clone(),
+                                span: span,
                             }),
-                            span.clone(),
+                            span,
                         );
                     } else if expected != Type::Any {
                         //println!("5");
@@ -1067,7 +1015,7 @@ impl TypeChecker {
                 }
                 return Ok(());
             }
-            None => return Err(TypeError::EmptyStack(expected, span.clone())),
+            None => return Err(TypeError::EmptyStack(expected, span)),
         }
     }
 
@@ -1092,12 +1040,9 @@ impl TypeChecker {
         }
 
         if !self.type_stack.is_empty() {
-            return Err(TypeError::NonEmptyStack(
-                TypeStack {
-                    type_stack: self.type_stack.clone(),
-                },
-                self.type_stack[0].span.file.clone(),
-            ));
+            return Err(TypeError::NonEmptyStack(TypeStack {
+                type_stack: self.type_stack.clone(),
+            }));
         }
 
         Ok(())
@@ -1159,14 +1104,14 @@ impl TypeChecker {
                                 }
                                 None => list_type = Some(Type::Bool),
                             },
-                            Operation::StringLiteral(_, _) => match list_type.clone() {
-                                Some(el_type) => {
-                                    if el_type != Type::String {
-                                        list_type = Some(Type::Any)
-                                    }
-                                }
-                                None => list_type = Some(Type::String),
-                            },
+                            // Operation::StringLiteral(_, _) => match list_type.clone() {
+                            //     Some(el_type) => {
+                            //         if el_type != Type::String {
+                            //             list_type = Some(Type::Any)
+                            //         }
+                            //     }
+                            //     None => list_type = Some(Type::String),
+                            // },
                             _ => list = false,
                         }
                     }
@@ -1205,12 +1150,12 @@ impl TypeChecker {
                     right: vec![Type::Bool],
                 }
             }
-            Operation::StringLiteral(_, _) => {
-                return Pair {
-                    left: vec![],
-                    right: vec![Type::String],
-                }
-            }
+            // Operation::StringLiteral(_, _) => {
+            //     return Pair {
+            //         left: vec![],
+            //         right: vec![Type::String],
+            //     }
+            // }
             Operation::Identifier(name, _) => {
                 let function = self.known_functions.get(name).unwrap(); //If this blows up I didn't parse the program right
 
@@ -1313,8 +1258,13 @@ impl TypeChecker {
                     right: vec![Type::List(Box::new(Type::Any))],
                 };
             }
-            Operation::Import(_, _) => todo!(),
-            Operation::Sort(_) => todo!(),
+            //Operation::Import(_, _) => todo!(),
+            Operation::Sort(_) => {
+                return Pair {
+                    left: vec![Type::List(Box::new(Type::Any))],
+                    right: vec![Type::List(Box::new(Type::Any))],
+                };
+            }
             Operation::Reverse(_) => todo!(),
             Operation::Max(_) => {
                 return Pair {
@@ -1359,15 +1309,12 @@ impl TypeChecker {
                 //Check resulting stack
                 for return_type in function.clone().returns {
                     let top = self.type_stack.pop();
-                    TypeChecker::check_type(return_type, top, span.clone())?;
+                    TypeChecker::check_type(return_type, top, *span)?;
                 }
                 if !self.type_stack.is_empty() {
-                    return Err(TypeError::NonEmptyStack(
-                        TypeStack {
-                            type_stack: self.type_stack.clone(),
-                        },
-                        span.file.clone(),
-                    ));
+                    return Err(TypeError::NonEmptyStack(TypeStack {
+                        type_stack: self.type_stack.clone(),
+                    }));
                 }
 
                 self.type_stack = current_stack;
@@ -1380,11 +1327,11 @@ impl TypeChecker {
                 let b = self.type_check_top(is_in_sequence, Type::Any, span)?;
                 self.type_stack.push(BoundType {
                     t: a.clone().unwrap().t,
-                    span: a.clone().unwrap().span.clone(),
+                    span: a.clone().unwrap().span,
                 });
                 self.type_stack.push(BoundType {
                     t: b.clone().unwrap().t,
-                    span: b.clone().unwrap().span.clone(),
+                    span: b.clone().unwrap().span,
                 });
             }
             Operation::Rot(span) => {
@@ -1393,26 +1340,26 @@ impl TypeChecker {
                 let c = self.type_check_top(is_in_sequence, Type::Any, span)?;
                 self.type_stack.push(BoundType {
                     t: b.clone().unwrap().t,
-                    span: b.clone().unwrap().span.clone(),
+                    span: b.clone().unwrap().span,
                 });
                 self.type_stack.push(BoundType {
                     t: a.clone().unwrap().t,
-                    span: a.clone().unwrap().span.clone(),
+                    span: a.clone().unwrap().span,
                 });
                 self.type_stack.push(BoundType {
                     t: c.clone().unwrap().t,
-                    span: c.clone().unwrap().span.clone(),
+                    span: c.clone().unwrap().span,
                 });
             }
             Operation::Dup(span) => {
                 let top = self.type_check_top(is_in_sequence, Type::Any, span)?;
                 self.type_stack.push(BoundType {
                     t: top.clone().unwrap().t,
-                    span: top.clone().unwrap().span.clone(),
+                    span: top.clone().unwrap().span,
                 });
                 self.type_stack.push(BoundType {
                     t: top.clone().unwrap().t,
-                    span: top.clone().unwrap().span.clone(),
+                    span: top.clone().unwrap().span,
                 });
             }
             Operation::Sequence(ops, span) => {
@@ -1440,17 +1387,17 @@ impl TypeChecker {
                     match list_type {
                         Some(t) => self.type_stack.push(BoundType {
                             t: Type::List(Box::new(t)),
-                            span: span.clone(),
+                            span: *span,
                         }),
                         None => self.type_stack.push(BoundType {
                             t: Type::List(Box::new(Type::Any)), //TODO: also void, unit or none type?
-                            span: span.clone(),
+                            span: *span,
                         }),
                     }
                 } else {
                     self.type_stack.push(BoundType {
                         t: Type::Function(inputs, outputs),
-                        span: span.clone(),
+                        span: *span,
                     });
                 }
             }
@@ -1467,7 +1414,7 @@ impl TypeChecker {
                         for output in outputs {
                             self.type_stack.push(BoundType {
                                 t: output,
-                                span: span.clone(),
+                                span: *span,
                             });
                         }
                     }
@@ -1475,7 +1422,7 @@ impl TypeChecker {
                     //     for el in els {
                     //         self.type_stack.push(BoundType {
                     //             t: el,
-                    //             span: span.clone(),
+                    //             span: span,
                     //         });
                     //     }
                     // }
@@ -1485,22 +1432,22 @@ impl TypeChecker {
             Operation::IntegerLiteral(_, span) => {
                 self.type_stack.push(BoundType {
                     t: Type::Int,
-                    span: span.clone(),
+                    span: *span,
                 });
             }
             Operation::BooleanLiteral(_, span) => {
                 self.type_stack.push(BoundType {
                     t: Type::Bool,
-                    span: span.clone(),
+                    span: *span,
                 });
             }
 
-            Operation::StringLiteral(_, span) => {
-                self.type_stack.push(BoundType {
-                    t: Type::String,
-                    span: span.clone(),
-                });
-            }
+            // Operation::StringLiteral(_, span) => {
+            //     self.type_stack.push(BoundType {
+            //         t: Type::String,
+            //         span: *span,
+            //     });
+            // }
             Operation::Identifier(identifier, span) => {
                 if let Some(function) = self.clone().known_functions.get(identifier) {
                     for arg_type in function.inputs.clone() {
@@ -1510,7 +1457,7 @@ impl TypeChecker {
                     for result_type in function.outputs.clone() {
                         self.type_stack.push(BoundType {
                             t: result_type,
-                            span: span.clone(),
+                            span: *span,
                         });
                     }
                 } else {
@@ -1527,7 +1474,7 @@ impl TypeChecker {
                     self.type_check_top(is_in_sequence, Type::Int, span)?;
                     self.type_stack.push(BoundType {
                         t: Type::Int,
-                        span: span.clone(),
+                        span: *span,
                     });
                 }
                 BinaryOperator::Gt | BinaryOperator::Lt => {
@@ -1535,7 +1482,7 @@ impl TypeChecker {
                     self.type_check_top(is_in_sequence, Type::Int, span)?;
                     self.type_stack.push(BoundType {
                         t: Type::Bool,
-                        span: span.clone(),
+                        span: *span,
                     });
                 }
                 BinaryOperator::Eq => {
@@ -1543,7 +1490,7 @@ impl TypeChecker {
                     self.type_check_top(is_in_sequence, t.unwrap().t, span)?;
                     self.type_stack.push(BoundType {
                         t: Type::Bool,
-                        span: span.clone(),
+                        span: *span,
                     });
                 }
                 BinaryOperator::And | BinaryOperator::Or => {
@@ -1551,7 +1498,7 @@ impl TypeChecker {
                     self.type_check_top(is_in_sequence, Type::Bool, span)?;
                     self.type_stack.push(BoundType {
                         t: Type::Bool,
-                        span: span.clone(),
+                        span: *span,
                     });
                 }
             },
@@ -1560,7 +1507,7 @@ impl TypeChecker {
                     self.type_check_top(is_in_sequence, Type::Bool, span)?;
                     self.type_stack.push(BoundType {
                         t: Type::Bool,
-                        span: span.clone(),
+                        span: *span,
                     });
                 }
             },
@@ -1584,7 +1531,7 @@ impl TypeChecker {
                         .unwrap();
                     self.type_stack.push(BoundType {
                         t: list.t,
-                        span: span.clone(),
+                        span: *span,
                     });
                 } else {
                     panic!("Incorrectly parsed filter");
@@ -1601,7 +1548,7 @@ impl TypeChecker {
                     .unwrap();
                 self.type_stack.push(BoundType {
                     t: list.t,
-                    span: span.clone(),
+                    span: *span,
                 });
             }
             Operation::Apply(span) => {
@@ -1625,7 +1572,7 @@ impl TypeChecker {
                 self.type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?;
                 self.type_stack.push(BoundType {
                     t: Type::Int,
-                    span: span.clone(),
+                    span: *span,
                 });
             }
             Operation::Fold(span) => {
@@ -1645,7 +1592,7 @@ impl TypeChecker {
 
                 self.type_stack.push(BoundType {
                     t: acc.clone().t,
-                    span: span.clone(),
+                    span: *span,
                 });
             }
             Operation::Concat(span) => {
@@ -1662,12 +1609,12 @@ impl TypeChecker {
                         if e1 == e2 {
                             self.type_stack.push(BoundType {
                                 t: Type::List(e1),
-                                span: span.clone(),
+                                span: *span,
                             });
                         } else {
                             self.type_stack.push(BoundType {
                                 t: Type::List(Box::new(Type::Any)),
-                                span: span.clone(),
+                                span: *span,
                             });
                         }
                     } else {
@@ -1685,7 +1632,7 @@ impl TypeChecker {
                 {
                     self.type_stack.push(BoundType {
                         t: *el,
-                        span: span.clone(),
+                        span: *span,
                     });
                 }
             }
@@ -1696,7 +1643,7 @@ impl TypeChecker {
                     .t;
                 self.type_stack.push(BoundType {
                     t: list,
-                    span: span.clone(),
+                    span: *span,
                 });
             }
             Operation::Cons(span) => {
@@ -1712,12 +1659,12 @@ impl TypeChecker {
                 if e1 == e2 {
                     self.type_stack.push(BoundType {
                         t: Type::List(Box::new(e1)),
-                        span: span.clone(),
+                        span: *span,
                     });
                 } else {
                     self.type_stack.push(BoundType {
                         t: Type::List(Box::new(Type::Any)),
-                        span: span.clone(),
+                        span: *span,
                     });
                 }
             }
@@ -1739,7 +1686,7 @@ impl TypeChecker {
                             return Err(TypeError::IfBranchInputMismatch(
                                 then_inputs,
                                 else_inputs,
-                                span.clone(),
+                                *span,
                             ));
                         }
                         for i in 0..then_inputs.len() {
@@ -1747,7 +1694,7 @@ impl TypeChecker {
                                 return Err(TypeError::IfBranchInputMismatch(
                                     then_inputs,
                                     else_inputs,
-                                    span.clone(),
+                                    *span,
                                 ));
                             }
                         }
@@ -1756,7 +1703,7 @@ impl TypeChecker {
                             return Err(TypeError::IfBranchOutputMismatch(
                                 then_outputs,
                                 else_outputs,
-                                span.clone(),
+                                *span,
                             ));
                         }
                         for i in 0..then_outputs.len() {
@@ -1764,7 +1711,7 @@ impl TypeChecker {
                                 return Err(TypeError::IfBranchOutputMismatch(
                                     then_outputs,
                                     else_outputs,
-                                    span.clone(),
+                                    *span,
                                 ));
                             }
                         }
@@ -1774,7 +1721,7 @@ impl TypeChecker {
                         for output in then_outputs {
                             self.type_stack.push(BoundType {
                                 t: output,
-                                span: span.clone(),
+                                span: *span,
                             });
                         }
                     } else {
@@ -1789,24 +1736,13 @@ impl TypeChecker {
                 // self.type_check_top(is_in_sequence, Type::Seq, span)?;
                 // self.type_check_top(is_in_sequence, Type::Seq, span)?;
             }
-            Operation::Import(functions, _) => {
-                for function in functions {
-                    self.known_functions.insert(
-                        function.name.clone(),
-                        BoundFunction {
-                            inputs: function.arguments.clone(),
-                            outputs: function.returns.clone(),
-                        },
-                    );
-                }
-            }
             Operation::Sort(span) | Operation::Reverse(span) => {
                 let list = self
                     .type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?
                     .unwrap();
                 self.type_stack.push(BoundType {
                     t: list.t,
-                    span: span.clone(),
+                    span: *span,
                 });
             }
             Operation::DumpTypeStack(span) => {
@@ -1814,7 +1750,7 @@ impl TypeChecker {
                     TypeStack {
                         type_stack: self.type_stack.clone(),
                     },
-                    span.clone(),
+                    *span,
                 ));
             }
             Operation::Max(span) => {
@@ -1822,7 +1758,7 @@ impl TypeChecker {
                 self.type_check_top(is_in_sequence, Type::Int, span)?;
                 self.type_stack.push(BoundType {
                     t: Type::Int,
-                    span: span.clone(),
+                    span: *span,
                 });
             }
         })
@@ -1836,7 +1772,7 @@ impl TypeChecker {
     ) -> Result<Option<BoundType>, TypeError> {
         self.infer_type_stack(is_in_sequence, expected_type.clone());
         let top = self.type_stack.pop();
-        TypeChecker::check_type(expected_type.clone(), top.clone(), span.clone())?;
+        TypeChecker::check_type(expected_type.clone(), top.clone(), *span)?;
         Ok(top)
     }
 
@@ -1848,7 +1784,6 @@ impl TypeChecker {
                     row: 0,
                     col: 0,
                     len: 0,
-                    file: "".to_string(),
                 },
             });
         }
@@ -1884,14 +1819,14 @@ fn parse_seq_type(ops: &Vec<Operation>) -> (bool, Option<Type>) {
                     }
                     None => list_type = Some(Type::Bool),
                 },
-                Operation::StringLiteral(_, _) => match list_type.clone() {
-                    Some(el_type) => {
-                        if el_type != Type::String {
-                            list_type = Some(Type::Any)
-                        }
-                    }
-                    None => list_type = Some(Type::String),
-                },
+                // Operation::StringLiteral(_, _) => match list_type.clone() {
+                //     Some(el_type) => {
+                //         if el_type != Type::String {
+                //             list_type = Some(Type::Any)
+                //         }
+                //     }
+                //     None => list_type = Some(Type::String),
+                // },
                 Operation::Sequence(ops, _) => {
                     let sub_type = parse_seq_type(ops);
                     if !sub_type.0 || sub_type.1.is_none() {
@@ -1940,7 +1875,7 @@ fn apply(signature: Pair<Vec<Type>, Vec<Type>>, inputs: &mut Vec<Type>, outputs:
 enum Value {
     Integer(i64),
     Boolean(bool),
-    String(String),
+    //String(String),
     //Function(Pair<Vec<Type>, Vec<Type>>),
     Seq(Vec<Operation>),
 }
@@ -1967,7 +1902,7 @@ impl Display for Value {
             //     write!(f, "fn ({:?} -- {:?})", signature.left, signature.right)
             // }
             Value::Seq(elements) => write!(f, "{:#?}", elements),
-            Value::String(s) => write!(f, "{}", s),
+            //Value::String(s) => write!(f, "{}", s),
         }
     }
 }
@@ -1982,13 +1917,13 @@ impl Add for Value {
                     unreachable!();
                 }
             }
-        } else if let Value::String(l) = self {
-            match rhs {
-                Value::String(r) => return Value::String(l + &r),
-                _ => {
-                    unreachable!();
-                }
-            }
+        // } else if let Value::String(l) = self {
+        //     match rhs {
+        //         Value::String(r) => return Value::String(l + &r),
+        //         _ => {
+        //             unreachable!();
+        //         }
+        //     }
         } else {
             unreachable!();
         }
@@ -2062,7 +1997,7 @@ impl PartialEq for Value {
         match (self, other) {
             (Self::Integer(l0), Self::Integer(r0)) => l0 == r0,
             (Self::Boolean(l0), Self::Boolean(r0)) => l0 == r0,
-            (Self::String(l0), Self::String(r0)) => l0 == r0,
+            //(Self::String(l0), Self::String(r0)) => l0 == r0,
             //(Self::Function(l0), Self::Function(r0)) => l0 == r0,
             (Self::Seq(_), Self::Seq(_)) => todo!(),
             _ => {
@@ -2094,7 +2029,7 @@ impl Not for Value {
             Value::Boolean(b) => return Value::Boolean(!b),
             //Value::Function(_) => todo!(),
             Value::Seq(_) => todo!(),
-            Value::String(_) => todo!(),
+            // Value::String(_) => todo!(),
         }
     }
 }
@@ -2121,7 +2056,7 @@ impl Interpreter {
             Operation::IntegerLiteral(i, _) => self.stack.push(Value::Integer(*i)),
             Operation::BooleanLiteral(b, _) => self.stack.push(Value::Boolean(*b)),
 
-            Operation::StringLiteral(s, _) => self.stack.push(Value::String(s.to_string())),
+            //Operation::StringLiteral(s, _) => self.stack.push(Value::String(s.to_string())),
             Operation::Binary(op, _) => {
                 let left_val = self.stack.pop().unwrap();
                 let right_val = self.stack.pop().unwrap();
@@ -2237,21 +2172,21 @@ impl Interpreter {
                                         Span::empty(),
                                     ));
                                 }
-                                (Operation::Sequence(_, _), Value::String(s)) => {
-                                    results.push(Operation::Sequence(
-                                        vec![Operation::StringLiteral(s, Span::empty())],
-                                        Span::empty(),
-                                    ));
-                                }
+                                // (Operation::Sequence(_, _), Value::String(s)) => {
+                                //     results.push(Operation::Sequence(
+                                //         vec![Operation::StringLiteral(s, Span::empty())],
+                                //         Span::empty(),
+                                //     ));
+                                // }
                                 (Operation::IntegerLiteral(_, _), Value::Integer(i)) => {
                                     results.push(Operation::IntegerLiteral(i, Span::empty()));
                                 }
                                 (Operation::BooleanLiteral(_, _), Value::Boolean(b)) => {
                                     results.push(Operation::BooleanLiteral(b, Span::empty()));
                                 }
-                                (Operation::StringLiteral(_, _), Value::String(s)) => {
-                                    results.push(Operation::StringLiteral(s, Span::empty()));
-                                }
+                                // (Operation::StringLiteral(_, _), Value::String(s)) => {
+                                //     results.push(Operation::StringLiteral(s, Span::empty()));
+                                // }
                                 _ => panic!(
                                     "Illegal combination, operand: {:?}, result: {}",
                                     operand, &result
@@ -2389,7 +2324,6 @@ impl Interpreter {
                     Value::Integer(i) => Operation::IntegerLiteral(i, Span::empty()),
                     Value::Boolean(b) => Operation::BooleanLiteral(b, Span::empty()),
                     Value::Seq(ops) => Operation::Sequence(ops, Span::empty()),
-                    Value::String(s) => Operation::StringLiteral(s, Span::empty()),
                 };
                 let rest = self.stack.pop().unwrap();
                 match rest {
@@ -2405,7 +2339,6 @@ impl Interpreter {
                         let operations = vec![Operation::BooleanLiteral(b, Span::empty()), op];
                         self.stack.push(Value::Seq(operations));
                     }
-                    _ => todo!(),
                 }
             }
             Operation::If(_) => {
@@ -2450,12 +2383,6 @@ impl Interpreter {
                     }
                 }
             }
-            Operation::Import(functions, _) => {
-                for function in functions {
-                    self.functions
-                        .insert(function.name.clone(), function.clone());
-                }
-            }
             Operation::Sort(span) => {
                 if let Value::Seq(ops) = self.stack.pop().unwrap() {
                     let mut values: Vec<Value> = vec![];
@@ -2463,7 +2390,7 @@ impl Interpreter {
                         match op {
                             Operation::IntegerLiteral(i, _) => values.push(Value::Integer(i)),
                             Operation::BooleanLiteral(b, _) => values.push(Value::Boolean(b)),
-                            Operation::StringLiteral(s, _) => values.push(Value::String(s)),
+                            //Operation::StringLiteral(s, _) => values.push(Value::String(s)),
                             _ => panic!("Cannot sort {:?}", op),
                         }
                     }
@@ -2472,13 +2399,14 @@ impl Interpreter {
                     for value in values.iter().rev() {
                         match value {
                             Value::Integer(i) => {
-                                sorted_ops.push(Operation::IntegerLiteral(*i, span.clone()))
+                                sorted_ops.push(Operation::IntegerLiteral(*i, *span))
                             }
                             Value::Boolean(b) => {
-                                sorted_ops.push(Operation::BooleanLiteral(*b, span.clone()))
+                                sorted_ops.push(Operation::BooleanLiteral(*b, *span))
                             }
-                            Value::String(s) => sorted_ops
-                                .push(Operation::StringLiteral(s.to_string(), span.clone())),
+                            // Value::String(s) => {
+                            //     sorted_ops.push(Operation::StringLiteral(s.to_string(), *span))
+                            // }
                             _ => panic!("Cannot sort {}", value),
                         }
                     }
@@ -2493,7 +2421,7 @@ impl Interpreter {
                         match op {
                             Operation::IntegerLiteral(i, _) => values.push(Value::Integer(i)),
                             Operation::BooleanLiteral(b, _) => values.push(Value::Boolean(b)),
-                            Operation::StringLiteral(s, _) => values.push(Value::String(s)),
+                            //Operation::StringLiteral(s, _) => values.push(Value::String(s)),
                             _ => panic!("Cannot sort {:?}", op),
                         }
                     }
@@ -2506,8 +2434,8 @@ impl Interpreter {
                             Value::Boolean(b) => {
                                 sorted_ops.push(Operation::BooleanLiteral(*b, span.to_owned()))
                             }
-                            Value::String(s) => sorted_ops
-                                .push(Operation::StringLiteral(s.to_string(), span.to_owned())),
+                            // Value::String(s) => sorted_ops
+                            //     .push(Operation::StringLiteral(s.to_string(), span.to_owned())),
                             _ => panic!("Cannot sort {}", value),
                         }
                     }
@@ -2544,35 +2472,40 @@ impl Interpreter {
     }
 }
 
-fn display_type_error(error: TypeError, contents: &String) {
+//TODO: Have a map of index -> file_name
+fn display_type_error(error: TypeError, file_name: String, contents: &String) {
     if let TypeError::DumpTypeStack(_, span) = &error {
         print!("{} ", format!("{}", "Halting execution").yellow());
-        println!("at {}", span);
+        println!("at {}:{}", file_name, span);
     } else {
         print!("{} ", format!("{}", "ERROR:").red());
     }
-    println!("{}", error);
+    print!("{}", error);
     match error {
         TypeError::TypeMismatch(_, actual, span) => {
-            print_span(span.clone(), contents, HighlightColor::RED);
-            println!("\n{} introduced at {}", actual.t, actual.span);
+            println!(" at {}:{}", file_name, span);
+            print_span(span, contents, HighlightColor::RED);
+            println!("\n{} introduced at {}:{}", actual.t, file_name, actual.span);
             print_span(actual.span, contents, HighlightColor::YELLOW);
         }
         TypeError::EmptyStack(_, span) => {
-            print_span(span.clone(), contents, HighlightColor::RED);
+            println!(" at {}:{}", file_name, span);
+            print_span(span, contents, HighlightColor::RED);
         }
         TypeError::IfBranchInputMismatch(_, _, span) => {
-            print_span(span.clone(), contents, HighlightColor::RED);
+            println!(" at {}:{}", file_name, span);
+            print_span(span, contents, HighlightColor::RED);
         }
         TypeError::IfBranchOutputMismatch(_, _, span) => {
-            print_span(span.clone(), contents, HighlightColor::RED);
+            println!(" at {}:{}", file_name, span);
+            print_span(span, contents, HighlightColor::RED);
         }
-        TypeError::NonEmptyStack(type_stack, _) => {
+        TypeError::NonEmptyStack(type_stack) => {
             let mut stack_index = 0;
             for bound_type in type_stack.type_stack.iter().rev() {
                 println!(
-                    "\n[{}] {} introduced at {}",
-                    stack_index, bound_type.t, bound_type.span
+                    "\n[{}] {} introduced at {}:{}",
+                    stack_index, bound_type.t, file_name, bound_type.span
                 );
                 print_span(bound_type.clone().span, contents, HighlightColor::RED);
                 stack_index += 1;
@@ -2582,8 +2515,8 @@ fn display_type_error(error: TypeError, contents: &String) {
             let mut stack_index = 0;
             for bound_type in type_stack.type_stack.iter().rev() {
                 println!(
-                    "\n[{}] `{}` introduced at {}",
-                    stack_index, bound_type.t, bound_type.span
+                    "\n[{}] `{}` introduced at {}:{}",
+                    stack_index, bound_type.t, file_name, bound_type.span
                 );
                 print_span(bound_type.clone().span, contents, HighlightColor::YELLOW);
                 stack_index += 1;
@@ -2592,15 +2525,16 @@ fn display_type_error(error: TypeError, contents: &String) {
     }
 }
 
-fn display_parse_error(error: ParseError, contents: &String) {
+fn display_parse_error(error: ParseError, file_name: String, contents: &String) {
     print!("{} ", format!("{}", "ERROR:").red());
-    println!("{}", error);
     match error {
         ParseError::UnknownIdentifier(_, span) => {
-            print_span(span.clone(), contents, HighlightColor::RED);
+            println!("{} at {}:{}", error, file_name, span);
+            print_span(span, contents, HighlightColor::RED);
         }
         ParseError::UnexpectedToken(_, _, span) => {
-            print_span(span.clone(), contents, HighlightColor::RED);
+            println!("{} at {}:{}", error, file_name, span);
+            print_span(span, contents, HighlightColor::RED);
         }
     }
 }
@@ -2634,33 +2568,67 @@ fn print_span(span: Span, contents: &String, highlight_color: HighlightColor) {
     }
 }
 
+use std::time::Instant;
 fn main() {
     let args: Vec<String> = env::args().collect();
     let file_path = &args[1];
 
+    let measure = args.contains(&"-m".to_string());
+    let disable_type_check = args.contains(&"-t".to_string());
+
+    let start = Instant::now();
+
     let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
 
-    let tokens = lex(file_path.to_owned(), &contents);
+    let mut now = Instant::now();
+    let tokens = lex(&contents);
+    if measure {
+        println!("Lexing took {}ms", now.elapsed().as_millis());
+    }
 
     match tokens {
         Ok(ts) => {
-            let mut parser = Parser::new(ts);
+            now = Instant::now();
+            let mut parser = Parser::new(contents.clone(), ts);
             match parser.parse() {
                 Ok(program) => {
-                    let mut type_checker = TypeChecker::new();
-                    if let Err(error) = type_checker.type_check_parsed_program(&program) {
-                        display_type_error(error, &contents);
-                        return;
+                    if measure {
+                        println!("Parsing took {}ms", now.elapsed().as_millis());
+                    }
+                    if !disable_type_check {
+                        now = Instant::now();
+                        let mut type_checker = TypeChecker::new();
+                        if let Err(error) = type_checker.type_check_parsed_program(&program) {
+                            if measure {
+                                println!("Type Checking took {}ms", now.elapsed().as_millis());
+                            }
+                            display_type_error(error, file_path.to_string(), &contents);
+                            return;
+                        }
+                        if measure {
+                            println!("Type Checking took {}ms", now.elapsed().as_millis());
+                        }
                     }
                     let mut interpreter = Interpreter::new(program);
+
+                    now = Instant::now();
                     interpreter.interpret_program();
+                    if measure {
+                        println!("Interpreting took {}ms", now.elapsed().as_millis());
+                    }
                 }
                 Err(error) => {
-                    display_parse_error(error, &contents);
+                    display_parse_error(error, file_path.to_string(), &contents);
                     return;
                 }
             }
         }
         Err(err) => println!("{}", err),
+    }
+    if measure {
+        println!(
+            "Execution took a total of {}ms",
+            start.elapsed().as_millis()
+        );
     }
 }

@@ -27,6 +27,10 @@ define sum-all-over-two (list of int -- int)
     [2 >] filter sum 
 end
 
+define flatten (list of list of any -- list of any)
+    [concat] [] fold
+end
+
 [1 2 3 4 5] 
 dup sum print 
 dup product print
@@ -39,5 +43,6 @@ dup [2 >] filter [print] apply
     [len 3 =] filter
     [sum] map
     [sort] map
+    flatten
     [print] apply
 pop
