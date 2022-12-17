@@ -8,5 +8,6 @@ end
 
 [[1 2] [1 3]]
     [sum] map
+    flatten
     [max] 0 fold
     print
