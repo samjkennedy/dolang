@@ -1,0 +1,5 @@
+Halting execution at .\tests\test_cases\ti2.do:1:7
+State of the stack:
+[Function([Int], [Bool])]
+[0] `fn ([Int] -- [Bool])` introduced at .\tests\test_cases\ti2.do:1:1
+1:    [3 >] ???
