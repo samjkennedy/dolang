@@ -872,7 +872,7 @@ impl fmt::Display for TypeError {
             TypeError::IfBranchInputMismatch(then_inputs, else_inputs, _) => {
                 write!(
                     f,
-                    "Both branches of the `if` expression expect different inputs",
+                    "Both branches of the `if` expression expect different inputs.\n",
                 )?;
                 write!(f, " Then expects: {:?}\n", then_inputs)?;
                 write!(f, " Else expects: {:?}", else_inputs)
@@ -880,7 +880,7 @@ impl fmt::Display for TypeError {
             TypeError::IfBranchOutputMismatch(then_outputs, else_outputs, _) => {
                 write!(
                     f,
-                    "Both branches of the `if` expression generate different outputs",
+                    "Both branches of the `if` expression generate different outputs.\n",
                 )?;
                 write!(f, " Then generates: {:?}\n", then_outputs)?;
                 write!(f, " Else generates: {:?}", else_outputs)
@@ -905,6 +905,7 @@ impl Display for BoundType {
 struct TypeChecker {
     type_stack: Vec<BoundType>,
     known_functions: HashMap<String, BoundFunction>,
+    generics: HashMap<String, Type>,
 }
 
 #[derive(Clone)]
@@ -940,7 +941,7 @@ impl TypeChecker {
                 if let Type::Function(inputs, outputs) = bound_type.clone().t {
                     if let Type::Function(args, returns) = expected.clone() {
                         if inputs.len() != args.len() || outputs.len() != returns.len() {
-                            println!("1");
+                            //println!("1");
                             return Err(TypeError::TypeMismatch(expected, bound_type, span));
                         }
                         for i in 0..inputs.len() {
@@ -948,7 +949,7 @@ impl TypeChecker {
                             let arg = args[i].clone();
 
                             if !(input == Type::Any || arg == Type::Any || input == arg) {
-                                println!("2");
+                                //println!("2");
                                 return Err(TypeError::TypeMismatch(expected, bound_type, span));
                             }
                         }
@@ -957,13 +958,13 @@ impl TypeChecker {
                             let ret = returns[i].clone();
 
                             if !(output == Type::Any || ret == Type::Any || output == ret) {
-                                println!("3");
+                                //println!("3");
                                 return Err(TypeError::TypeMismatch(expected, bound_type, span));
                             }
                         }
                         return Ok(());
                     } else if expected != Type::Any {
-                        println!("4");
+                        //println!("4");
                         return Err(TypeError::TypeMismatch(expected, bound_type, span));
                     }
                 }
@@ -983,13 +984,13 @@ impl TypeChecker {
                         }
                         return Ok(());
                     } else if expected != Type::Any {
-                        println!("5");
+                        // println!("5");
                         return Err(TypeError::TypeMismatch(expected, bound_type, span));
                     }
                 }
 
                 if bound_type.t != Type::Any && expected != Type::Any && bound_type.t != expected {
-                    println!("6");
+                    //println!("6");
                     return Err(TypeError::TypeMismatch(expected, bound_type, span));
                 }
                 return Ok(());
@@ -1368,9 +1369,7 @@ impl TypeChecker {
                 let (list, list_type) = parse_seq_type(ops);
 
                 for op in ops {
-                    let signature = self.get_signature(op);
-
-                    apply(signature, &mut inputs, &mut outputs);
+                    self.apply(op, &mut inputs, &mut outputs)?;
 
                     //println!("{:?}", op);
                     self.type_check_op(op, true, type_stack_stack)?;
@@ -1697,7 +1696,14 @@ impl TypeChecker {
                             ));
                         }
                         for i in 0..then_inputs.len() {
-                            if then_inputs[i] != else_inputs[i] {
+                            if let Err(_) = TypeChecker::check_type(
+                                then_inputs[i].clone(),
+                                Some(BoundType {
+                                    t: else_inputs[i].clone(),
+                                    span: *span,
+                                }),
+                                *span,
+                            ) {
                                 return Err(TypeError::IfBranchInputMismatch(
                                     then_inputs,
                                     else_inputs,
@@ -1714,7 +1720,14 @@ impl TypeChecker {
                             ));
                         }
                         for i in 0..then_outputs.len() {
-                            if then_outputs[i] != else_outputs[i] {
+                            if let Err(_) = TypeChecker::check_type(
+                                then_outputs[i].clone(),
+                                Some(BoundType {
+                                    t: else_outputs[i].clone(),
+                                    span: *span,
+                                }),
+                                *span,
+                            ) {
                                 return Err(TypeError::IfBranchOutputMismatch(
                                     then_outputs,
                                     else_outputs,
@@ -1738,9 +1751,28 @@ impl TypeChecker {
                     panic!("If parsed wrong");
                 }
             }
-            Operation::While(_) => {
-                todo!();
-                // self.type_check_top(is_in_sequence, Type::Seq, span)?;
+            Operation::While(span) => {
+                if let Type::Function(_, _) = self
+                    .type_check_top(is_in_sequence, Type::Any, span)?
+                    .unwrap()
+                    .t
+                {
+                    if let Type::Function(_, _) = self
+                        .type_check_top(
+                            is_in_sequence,
+                            Type::Function(vec![Type::Any], vec![Type::Any, Type::Bool]),
+                            span,
+                        )?
+                        .unwrap()
+                        .t
+                    {
+                        return Ok(());
+                    } else {
+                        panic!("While parsed wrong");
+                    }
+                } else {
+                    panic!("While parsed wrong");
+                }
                 // self.type_check_top(is_in_sequence, Type::Seq, span)?;
             }
             Operation::Sort(span) | Operation::Reverse(span) => {
@@ -1792,7 +1824,72 @@ impl TypeChecker {
         return TypeChecker {
             type_stack: vec![],
             known_functions: HashMap::new(),
+            generics: HashMap::new(),
         };
+    }
+    fn apply(
+        &mut self,
+        op: &Operation,
+        inputs: &mut Vec<Type>,
+        outputs: &mut Vec<Type>,
+    ) -> Result<(), TypeError> {
+        let signature = self.get_signature(op);
+        //If it's a fresh slate then just add the inputs and outputs
+        // println!("op: {:?}, sig: {:?}", op, signature);
+        if inputs.is_empty() && outputs.is_empty() {
+            *inputs = signature.left;
+            *outputs = signature.right;
+            // println!("inputs: {:?}", inputs);
+            // println!("outputs: {:?}", outputs);
+            return Ok(());
+        }
+        //after dup we have [any] -- [any any] // need generics to allow parameterization, we know that the two Any's are the same so if one is inferred we know the other
+        //after * we want [int] -- [int]
+
+        //otherwise we need to simulate running the operation
+        for arg in signature.left.clone() {
+            //If there's a type in the outputs, take it and check it's compatible
+            if outputs.len() > 0 {
+                let output = outputs.pop().unwrap();
+                TypeChecker::check_type(
+                    arg,
+                    Some(BoundType {
+                        t: output,
+                        span: get_span(op),
+                    }),
+                    get_span(op),
+                )?;
+                //If we're here then it's a match
+            } else {
+                //Else start pulling from the inputs
+                let input = inputs.pop();
+                match input {
+                    Some(t) => {
+                        TypeChecker::check_type(
+                            arg,
+                            Some(BoundType {
+                                t,
+                                span: get_span(op),
+                            }),
+                            get_span(op),
+                        )?;
+                    }
+                    None => {
+                        //we need to infer
+                        inputs.push(arg);
+                    }
+                }
+            }
+        }
+
+        //Then put the signature outputs in the outputs for the next op
+        for ret in signature.right.clone() {
+            outputs.push(ret);
+        }
+        // println!("inputs: {:?}", inputs);
+        // println!("outputs: {:?}", outputs);
+
+        return Ok(());
     }
 }
 
@@ -1840,37 +1937,41 @@ fn parse_seq_type(ops: &Vec<Operation>) -> (bool, Option<Type>) {
     (list, list_type)
 }
 
-fn apply(signature: Pair<Vec<Type>, Vec<Type>>, inputs: &mut Vec<Type>, outputs: &mut Vec<Type>) {
-    //If it's a fresh slate then just add the inputs and outputs
-    //println!("sig: {:?}", signature);
-    if inputs.is_empty() && outputs.is_empty() {
-        *inputs = signature.left;
-        *outputs = signature.right;
-        //println!("inputs: {:?}", inputs);
-        //println!("outputs: {:?}", outputs);
-        return;
-    }
-    //after dup we have [any] -- [any any]
-    //after * we want [int] -- [int], will settle for [any] -- [int]
+fn get_span(op: &Operation) -> Span {
+    match op {
+        Operation::Define(_, span)
+        | Operation::Pop(span)
+        | Operation::Swap(span)
+        | Operation::Rot(span)
+        | Operation::Dup(span)
+        | Operation::Over(span)
+        | Operation::Print(span)
+        | Operation::If(span)
+        | Operation::While(span)
+        | Operation::Sequence(_, span)
+        | Operation::Run(span)
+        | Operation::IntegerLiteral(_, span)
+        | Operation::BooleanLiteral(_, span)
+        | Operation::Identifier(_, span)
+        | Operation::Binary(_, span)
+        | Operation::Unary(_, span)
+        | Operation::Map(span)
+        | Operation::Apply(span)
+        | Operation::Filter(span)
+        | Operation::Len(span)
+        | Operation::Fold(span)
+        | Operation::Concat(span)
+        | Operation::Head(span)
+        | Operation::Tail(span)
+        | Operation::Last(span)
+        | Operation::Init(span)
+        | Operation::Cons(span)
+        | Operation::Sort(span)
+        | Operation::DumpTypeStack(span)
+        | Operation::Reverse(span) => *span,
 
-    //otherwise we need to simulate running the operation
-    for arg in signature.left.clone() {
-        if inputs.len() > 0 && *inputs.last().unwrap() == Type::Any {
-            outputs.pop();
-            inputs.pop();
-        }
-
-        if outputs.is_empty() {
-            inputs.push(arg);
-        } else {
-            outputs.pop();
-        }
+        Operation::NoOp => todo!(),
     }
-    for ret in signature.right.clone() {
-        outputs.push(ret);
-    }
-    // println!("inputs: {:?}", inputs);
-    // println!("outputs: {:?}", outputs);
 }
 
 //Interpreting
@@ -2177,41 +2278,16 @@ impl Interpreter {
                             }
 
                             let result = self.stack.pop().unwrap();
-                            match (operand, result.clone()) {
-                                (Operation::Sequence(_, _), Value::Seq(ops)) => {
+                            match result.clone() {
+                                Value::Seq(ops) => {
                                     results.push(Operation::Sequence(ops, Span::empty()));
                                 }
-                                (Operation::Sequence(_, _), Value::Integer(i)) => {
-                                    results.push(Operation::Sequence(
-                                        vec![Operation::IntegerLiteral(i, Span::empty())],
-                                        Span::empty(),
-                                    ));
-                                }
-                                (Operation::Sequence(_, _), Value::Boolean(b)) => {
-                                    results.push(Operation::Sequence(
-                                        vec![Operation::BooleanLiteral(b, Span::empty())],
-                                        Span::empty(),
-                                    ));
-                                }
-                                // (Operation::Sequence(_, _), Value::String(s)) => {
-                                //     results.push(Operation::Sequence(
-                                //         vec![Operation::StringLiteral(s, Span::empty())],
-                                //         Span::empty(),
-                                //     ));
-                                // }
-                                (Operation::IntegerLiteral(_, _), Value::Integer(i)) => {
+                                Value::Integer(i) => {
                                     results.push(Operation::IntegerLiteral(i, Span::empty()));
                                 }
-                                (Operation::BooleanLiteral(_, _), Value::Boolean(b)) => {
+                                Value::Boolean(b) => {
                                     results.push(Operation::BooleanLiteral(b, Span::empty()));
                                 }
-                                // (Operation::StringLiteral(_, _), Value::String(s)) => {
-                                //     results.push(Operation::StringLiteral(s, Span::empty()));
-                                // }
-                                _ => panic!(
-                                    "Illegal combination, operand: {:?}, result: {}",
-                                    operand, &result
-                                ),
                             }
                         }
                         results.reverse();

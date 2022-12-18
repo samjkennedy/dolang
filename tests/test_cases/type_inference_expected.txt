@@ -1,0 +1,5 @@
+Halting execution at .\tests\test_cases\type_inference.do:1:9
+State of the stack:
+[Function([Any], [Int])]
+[0] `fn ([Any] -- [Int])` introduced at .\tests\test_cases\type_inference.do:1:1
+1:    [dup *] ???
