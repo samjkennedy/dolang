@@ -135,10 +135,6 @@ The function can then be called by pushing its arguments onto the stack and push
 5 square print
 ```
 
-```
-> 25
-```
-
 The function is type checked at compile time, so if you mistakenly pop too many values or the wrong types of values, or put too many values onto the stack at the end, you will get a compile time error.
 
 ```
