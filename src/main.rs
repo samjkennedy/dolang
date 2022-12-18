@@ -69,6 +69,7 @@ enum TokenKind {
     PopKeyword,
     DupKeyword,
     RotKeyword,
+    OverKeyword,
     EndKeyword,
     RunKeyword,
     DefineKeyword,
@@ -142,6 +143,7 @@ fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
         ("pop".to_string(), TokenKind::PopKeyword),
         ("dup".to_string(), TokenKind::DupKeyword),
         ("rot".to_string(), TokenKind::RotKeyword),
+        ("over".to_string(), TokenKind::OverKeyword),
         ("end".to_string(), TokenKind::EndKeyword),
         ("run".to_string(), TokenKind::RunKeyword),
         ("define".to_string(), TokenKind::DefineKeyword),
@@ -468,6 +470,7 @@ enum Operation {
     Swap(Span),
     Rot(Span),
     Dup(Span),
+    Over(Span),
     Print(Span),
     If(Span),
     While(Span),
@@ -496,7 +499,6 @@ enum Operation {
     Sort(Span),
     DumpTypeStack(Span),
     Reverse(Span),
-    Max(Span),
 }
 
 impl Ord for Operation {
@@ -518,6 +520,7 @@ enum BinaryOperator {
     Mul,
     Div,
     Rem,
+    Max,
     Gt,
     Lt,
     Eq,
@@ -593,6 +596,7 @@ impl Parser {
                 TokenKind::Star => return Ok(Operation::Binary(BinaryOperator::Mul, span)),
                 TokenKind::Slash => return Ok(Operation::Binary(BinaryOperator::Div, span)),
                 TokenKind::Percent => return Ok(Operation::Binary(BinaryOperator::Rem, span)),
+                TokenKind::MaxKeyword => return Ok(Operation::Binary(BinaryOperator::Max, span)),
                 TokenKind::OpenAngle => return Ok(Operation::Binary(BinaryOperator::Gt, span)),
                 TokenKind::CloseAngle => return Ok(Operation::Binary(BinaryOperator::Lt, span)),
                 TokenKind::Equals => return Ok(Operation::Binary(BinaryOperator::Eq, span)),
@@ -608,6 +612,7 @@ impl Parser {
                 TokenKind::PopKeyword => return Ok(Operation::Pop(span)),
                 TokenKind::DupKeyword => return Ok(Operation::Dup(span)),
                 TokenKind::RotKeyword => return Ok(Operation::Rot(span)),
+                TokenKind::OverKeyword => return Ok(Operation::Over(span)),
 
                 TokenKind::IfKeyword => return Ok(Operation::If(span)),
                 TokenKind::WhileKeyword => return Ok(Operation::While(span)),
@@ -657,7 +662,6 @@ impl Parser {
                 TokenKind::ConsKeyword => return Ok(Operation::Cons(span)),
                 TokenKind::SortKeyword => return Ok(Operation::Sort(span)),
                 TokenKind::ReverseKeyword => return Ok(Operation::Reverse(span)),
-                TokenKind::MaxKeyword => return Ok(Operation::Max(span)),
                 TokenKind::Identifier => {
                     let identifier = &self.source.lines().nth(span.row - 1).unwrap()
                         [span.col - 1..span.col - 1 + span.len]
@@ -836,12 +840,12 @@ impl fmt::Display for TypeError {
             TypeError::TypeMismatch(expected, actual, _) => {
                 write!(
                     f,
-                    "Type mismatch, expected '{:?}' but the top of the stack was `{:?}`",
+                    "Type mismatch, expected '{}' but the top of the stack was `{}`",
                     expected, actual.t
                 )
             }
             TypeError::EmptyStack(expected, _) => {
-                write!(f, "Expected '{:?}' but the stack was empty", expected)
+                write!(f, "Expected '{}' but the stack was empty", expected)
             }
             TypeError::NonEmptyStack(stack) => {
                 write!(
@@ -936,7 +940,7 @@ impl TypeChecker {
                 if let Type::Function(inputs, outputs) = bound_type.clone().t {
                     if let Type::Function(args, returns) = expected.clone() {
                         if inputs.len() != args.len() || outputs.len() != returns.len() {
-                            //println!("One");
+                            println!("1");
                             return Err(TypeError::TypeMismatch(expected, bound_type, span));
                         }
                         for i in 0..inputs.len() {
@@ -944,7 +948,7 @@ impl TypeChecker {
                             let arg = args[i].clone();
 
                             if !(input == Type::Any || arg == Type::Any || input == arg) {
-                                //println!("Two");
+                                println!("2");
                                 return Err(TypeError::TypeMismatch(expected, bound_type, span));
                             }
                         }
@@ -953,13 +957,13 @@ impl TypeChecker {
                             let ret = returns[i].clone();
 
                             if !(output == Type::Any || ret == Type::Any || output == ret) {
-                                //println!("Three");
+                                println!("3");
                                 return Err(TypeError::TypeMismatch(expected, bound_type, span));
                             }
                         }
                         return Ok(());
                     } else if expected != Type::Any {
-                        //println!("Four");
+                        println!("4");
                         return Err(TypeError::TypeMismatch(expected, bound_type, span));
                     }
                 }
@@ -967,22 +971,25 @@ impl TypeChecker {
                 if let Type::List(actual_el_type) = bound_type.t.clone() {
                     if let Type::List(expected_el_type) = expected.clone() {
                         //Recursively check in case of List(List(Any)) and List(List(Int))
-                        return TypeChecker::check_type(
+                        if let Err(_) = TypeChecker::check_type(
                             *expected_el_type,
                             Some(BoundType {
                                 t: *actual_el_type,
                                 span: span,
                             }),
                             span,
-                        );
+                        ) {
+                            return Err(TypeError::TypeMismatch(expected, bound_type, span));
+                        }
+                        return Ok(());
                     } else if expected != Type::Any {
-                        //println!("5");
+                        println!("5");
                         return Err(TypeError::TypeMismatch(expected, bound_type, span));
                     }
                 }
 
                 if bound_type.t != Type::Any && expected != Type::Any && bound_type.t != expected {
-                    //println!("6");
+                    println!("6");
                     return Err(TypeError::TypeMismatch(expected, bound_type, span));
                 }
                 return Ok(());
@@ -1035,6 +1042,12 @@ impl TypeChecker {
                 return Pair {
                     left: vec![Type::Any],
                     right: vec![Type::Any, Type::Any],
+                }
+            }
+            Operation::Over(_) => {
+                return Pair {
+                    left: vec![Type::Any, Type::Any],
+                    right: vec![Type::Any, Type::Any, Type::Any],
                 }
             }
             Operation::Print(_) => {
@@ -1141,7 +1154,8 @@ impl TypeChecker {
                 | BinaryOperator::Sub
                 | BinaryOperator::Mul
                 | BinaryOperator::Div
-                | BinaryOperator::Rem => {
+                | BinaryOperator::Rem
+                | BinaryOperator::Max => {
                     return Pair {
                         left: vec![Type::Int, Type::Int],
                         right: vec![Type::Int],
@@ -1238,12 +1252,6 @@ impl TypeChecker {
                 };
             }
             Operation::Reverse(_) => todo!(),
-            Operation::Max(_) => {
-                return Pair {
-                    left: vec![Type::Int, Type::Int],
-                    right: vec![Type::Int],
-                }
-            }
             Operation::DumpTypeStack(_) => todo!(),
         }
     }
@@ -1332,6 +1340,22 @@ impl TypeChecker {
                 self.type_stack.push(BoundType {
                     t: top.clone().unwrap().t,
                     span: top.clone().unwrap().span,
+                });
+            }
+            Operation::Over(span) => {
+                let b = self.type_check_top(is_in_sequence, Type::Any, span)?;
+                let a = self.type_check_top(is_in_sequence, Type::Any, span)?;
+                self.type_stack.push(BoundType {
+                    t: a.clone().unwrap().t,
+                    span: a.clone().unwrap().span,
+                });
+                self.type_stack.push(BoundType {
+                    t: b.clone().unwrap().t,
+                    span: b.unwrap().span,
+                });
+                self.type_stack.push(BoundType {
+                    t: a.clone().unwrap().t,
+                    span: a.unwrap().span,
                 });
             }
             Operation::Sequence(ops, span) => {
@@ -1441,7 +1465,8 @@ impl TypeChecker {
                 | BinaryOperator::Sub
                 | BinaryOperator::Mul
                 | BinaryOperator::Div
-                | BinaryOperator::Rem => {
+                | BinaryOperator::Rem
+                | BinaryOperator::Max => {
                     self.type_check_top(is_in_sequence, Type::Int, span)?;
                     self.type_check_top(is_in_sequence, Type::Int, span)?;
                     self.type_stack.push(BoundType {
@@ -1510,18 +1535,28 @@ impl TypeChecker {
                 }
             }
             Operation::Map(span) => {
-                self.type_check_top(
-                    is_in_sequence,
-                    Type::Function(vec![Type::Any], vec![Type::Any]),
-                    span,
-                )?;
-                let list = self
-                    .type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?
+                if let Type::Function(inputs, outputs) = self
+                    .type_check_top(
+                        is_in_sequence,
+                        Type::Function(vec![Type::Any], vec![Type::Any]),
+                        span,
+                    )?
+                    .unwrap()
+                    .t
+                {
+                    self.type_check_top(
+                        is_in_sequence,
+                        Type::List(Box::new(inputs[0].clone())),
+                        span,
+                    )?
                     .unwrap();
-                self.type_stack.push(BoundType {
-                    t: list.t,
-                    span: *span,
-                });
+                    self.type_stack.push(BoundType {
+                        t: Type::List(Box::new(outputs[0].clone())),
+                        span: *span,
+                    });
+                } else {
+                    panic!();
+                }
             }
             Operation::Apply(span) => {
                 if let Type::Function(inputs, _) = self
@@ -1725,14 +1760,6 @@ impl TypeChecker {
                     *span,
                 ));
             }
-            Operation::Max(span) => {
-                self.type_check_top(is_in_sequence, Type::Int, span)?;
-                self.type_check_top(is_in_sequence, Type::Int, span)?;
-                self.type_stack.push(BoundType {
-                    t: Type::Int,
-                    span: *span,
-                });
-            }
         })
     }
 
@@ -1828,6 +1855,11 @@ fn apply(signature: Pair<Vec<Type>, Vec<Type>>, inputs: &mut Vec<Type>, outputs:
 
     //otherwise we need to simulate running the operation
     for arg in signature.left.clone() {
+        if inputs.len() > 0 && *inputs.last().unwrap() == Type::Any {
+            outputs.pop();
+            inputs.pop();
+        }
+
         if outputs.is_empty() {
             inputs.push(arg);
         } else {
@@ -1837,8 +1869,8 @@ fn apply(signature: Pair<Vec<Type>, Vec<Type>>, inputs: &mut Vec<Type>, outputs:
     for ret in signature.right.clone() {
         outputs.push(ret);
     }
-    //println!("inputs: {:?}", inputs);
-    //println!("outputs: {:?}", outputs);
+    // println!("inputs: {:?}", inputs);
+    // println!("outputs: {:?}", outputs);
 }
 
 //Interpreting
@@ -1871,7 +1903,7 @@ impl Display for Value {
             Value::Integer(i) => write!(f, "{}", i),
             Value::Boolean(b) => write!(f, "{}", b),
             // Value::Function(signature) => {
-            //     write!(f, "fn ({:?} -- {:?})", signature.left, signature.right)
+            //     write!(f, "fn ({} -- {})", signature.left, signature.right)
             // }
             Value::Seq(elements) => write!(f, "{:#?}", elements),
             //Value::String(s) => write!(f, "{}", s),
@@ -2074,6 +2106,15 @@ impl Interpreter {
                             _ => panic!(),
                         };
                     }
+                    BinaryOperator::Max => {
+                        let a = self.stack.pop().unwrap();
+                        let b = self.stack.pop().unwrap();
+                        if a > b {
+                            self.stack.push(a);
+                        } else {
+                            self.stack.push(b);
+                        }
+                    }
                 }
             }
             Operation::Unary(op, _) => {
@@ -2103,6 +2144,14 @@ impl Interpreter {
                 let val = self.stack.pop().unwrap();
                 self.stack.push(val.clone());
                 self.stack.push(val.clone());
+            }
+
+            Operation::Over(_) => {
+                let b = self.stack.pop().unwrap();
+                let a = self.stack.pop().unwrap();
+                self.stack.push(a.clone());
+                self.stack.push(b);
+                self.stack.push(a);
             }
             Operation::Print(_) => {
                 let val = self.stack.pop().unwrap();
@@ -2165,6 +2214,7 @@ impl Interpreter {
                                 ),
                             }
                         }
+                        results.reverse();
                         self.stack.push(Value::Seq(results));
                     } else {
                         todo!()
@@ -2412,15 +2462,6 @@ impl Interpreter {
                         }
                     }
                     self.stack.push(Value::Seq(sorted_ops));
-                }
-            }
-            Operation::Max(_) => {
-                let a = self.stack.pop().unwrap();
-                let b = self.stack.pop().unwrap();
-                if a > b {
-                    self.stack.push(a);
-                } else {
-                    self.stack.push(b);
                 }
             }
         }
