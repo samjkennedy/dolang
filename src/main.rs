@@ -893,7 +893,6 @@ impl PartialEq for Type {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::List(l0), Self::List(r0)) => {
-                println!("Inside PartialEq for type!");
                 return **l0 == Type::Any || **r0 == Type::Any || l0 == r0;
             }
             (Self::Function(l0, l1), Self::Function(r0, r1)) => l0 == r0 && l1 == r1,
@@ -1271,10 +1270,10 @@ impl Bindable for Operation {
                                 span,
                             ));
                         }
-                        if !type_equals(&ins[0].clone(), &accumulator_type)
-                            || !type_equals(&ins[1].clone(), &accumulator_type)
-                            || !type_equals(&element_type, &accumulator_type)
-                        {
+                        if !type_equals(&element_type, &accumulator_type) {
+                            println!("element_type {}", accumulator_type);
+
+                            println!("{}", accumulator_type);
                             return Err(TypeError::TypeMismatch(
                                 *element_type,
                                 acc_actual.unwrap(),
@@ -1360,9 +1359,9 @@ fn bind_sequence(elements: &Vec<Operation>) -> Result<Type, TypeError> {
                 Some(t) => {
                     if t != Type::Int {
                         return Err(TypeError::TypeMismatch(
-                            Type::Int,
+                            t,
                             BoundType {
-                                t,
+                                t: Type::Int,
                                 span: get_span(&element),
                             },
                             get_span(&element),
@@ -1375,9 +1374,37 @@ fn bind_sequence(elements: &Vec<Operation>) -> Result<Type, TypeError> {
                 Some(t) => {
                     if t != Type::Bool {
                         return Err(TypeError::TypeMismatch(
-                            Type::Bool,
+                            t,
                             BoundType {
-                                t,
+                                t: Type::Bool,
+                                span: get_span(&element),
+                            },
+                            get_span(&element),
+                        ));
+                    }
+                }
+            },
+            Operation::List(ops, _) => match el_type.clone() {
+                None => el_type = Some(bind_sequence(ops)?),
+                Some(t) => {
+                    if let Type::List(_) = t.clone() {
+                        let actual_type = bind_sequence(ops)?;
+                        if !type_equals(&actual_type, &t) {
+                            return Err(TypeError::TypeMismatch(
+                                t.clone(),
+                                BoundType {
+                                    t: actual_type,
+                                    span: get_span(&element),
+                                },
+                                get_span(&element),
+                            ));
+                        }
+                        continue;
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            t.clone(),
+                            BoundType {
+                                t: Type::List(Box::new(t)),
                                 span: get_span(&element),
                             },
                             get_span(&element),
@@ -1398,7 +1425,7 @@ fn bind_sequence(elements: &Vec<Operation>) -> Result<Type, TypeError> {
 
     match el_type {
         Some(t) => return Ok(Type::List(Box::new(t))),
-        None => todo!(),
+        None => return Ok(Type::List(Box::new(Type::Any))),
     }
 }
 
@@ -1660,7 +1687,35 @@ fn bind_lambda(elements: &Vec<Operation>) -> Result<Type, TypeError> {
             Operation::Over(_) => todo!(),
             Operation::If(_) => todo!(),
             Operation::While(_) => todo!(),
-            Operation::List(_, _) => todo!(),
+            Operation::List(ops, span) => {
+                if ops.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    outputs.push(Type::List(Box::new(generic_type)));
+                    continue;
+                }
+                let el_type = match ops[0] {
+                    Operation::IntegerLiteral(_, _) => Type::Int,
+                    Operation::BooleanLiteral(_, _) => Type::Bool,
+                    Operation::List(_, _) => todo!(),
+                    _ => unreachable!(),
+                };
+                if inputs.is_empty() && outputs.is_empty() {
+                    outputs.push(Type::List(Box::new(el_type)));
+                } else {
+                    let args = vec![];
+                    let returns = vec![Type::List(Box::new(el_type))];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                }
+            }
             Operation::Lambda(_, _) => todo!(),
             Operation::Run(_) => todo!(),
             Operation::IntegerLiteral(_, span) => {
@@ -1704,7 +1759,42 @@ fn bind_lambda(elements: &Vec<Operation>) -> Result<Type, TypeError> {
             Operation::Filter(_) => todo!(),
             Operation::Len(_) => todo!(),
             Operation::Fold(_) => todo!(),
-            Operation::Concat(_) => todo!(),
+            Operation::Concat(span) => {
+                if inputs.is_empty() && outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    inputs.push(Type::List(Box::new(generic_type.clone())));
+                    inputs.push(Type::List(Box::new(generic_type.clone())));
+
+                    outputs.push(Type::List(Box::new(generic_type.clone())));
+                } else if outputs.len() > 0 {
+                    if let Type::List(el) = outputs.last().unwrap() {
+                        let args = vec![Type::List(el.clone()), Type::List(el.clone())];
+                        let returns = vec![Type::List(el.clone())];
+                        infer_types(
+                            args,
+                            returns,
+                            span,
+                            &mut inputs,
+                            &mut outputs,
+                            &mut generics,
+                        )?;
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::List(Box::new(Type::Any)),
+                            BoundType {
+                                t: outputs.last().unwrap().clone(),
+                                span: span.clone(),
+                            },
+                            span.clone(),
+                        ));
+                    }
+                } else {
+                    return Err(TypeError::EmptyStack(Type::Any, span.clone()));
+                }
+            }
             Operation::Head(_) => todo!(),
             Operation::Tail(_) => todo!(),
             Operation::Last(_) => todo!(),
@@ -2608,8 +2698,15 @@ fn main() {
                         // }
                         let mut binder = Binder::new();
                         match binder.bind(&program) {
-                            Ok(_) => {}
+                            Ok(_) => {
+                                if measure {
+                                    println!("Type Checking took {}ms", now.elapsed().as_millis());
+                                }
+                            }
                             Err(errors) => {
+                                if measure {
+                                    println!("Type Checking took {}ms", now.elapsed().as_millis());
+                                }
                                 for error in errors {
                                     display_type_error(&error, file_path.to_string(), &contents);
                                     println!();

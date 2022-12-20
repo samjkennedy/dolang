@@ -14,6 +14,11 @@
     (*) 1 fold
     print
 
-[true false true false false] 
-    (dup *) map
-    (print) apply
+[true true]
+    (&) true fold
+    print
+
+[[1 2] [3 4] [5 6]]
+    (concat) [] fold
+    (+) 0 fold
+    print

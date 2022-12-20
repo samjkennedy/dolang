@@ -8,8 +8,8 @@ end
 
 define len-or-ten (list of any --)
     dup empty? 
-    [pop 10 print] 
-    [len print] 
+    (pop 10 print)
+    (len print)
     if
 end
 
