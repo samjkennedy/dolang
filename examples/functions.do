@@ -1,5 +1,5 @@
 define sum (list of int -- int)
-    [+] 0 fold
+    (+) 0 fold
 end
 
 define avg (list of int -- int)

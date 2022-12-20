@@ -40,7 +40,7 @@ Planned operations:
     1 2 cons -> [1 2]
     ```
 
-[ ] Nth/get (name tbd) -> pushes the nth element of a sequence onto the stack, preserving the original sequence
+[x] Nth/get (name tbd) -> pushes the nth element of a sequence onto the stack, preserving the original sequence
 
     ```
     [1 2 3] 1 nth -- [1 2 3] 2
