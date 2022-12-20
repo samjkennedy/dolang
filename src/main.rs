@@ -714,7 +714,6 @@ impl Parser {
                     if self.functions.contains_key(identifier) {
                         return Ok(Operation::Identifier(identifier.clone(), span));
                     }
-                    println!("Funcs: {:#?}", self.functions);
                     return Err(ParseError::UnknownIdentifier(
                         identifier.clone(),
                         token.span,
@@ -904,6 +903,7 @@ impl PartialEq for Type {
 
 struct Binder {
     type_stack: Vec<BoundType>,
+    functions: HashMap<String, Function>,
 }
 
 struct BoundOperation {
@@ -913,14 +913,17 @@ struct BoundOperation {
 
 impl Binder {
     fn new() -> Binder {
-        return Binder { type_stack: vec![] };
+        return Binder {
+            type_stack: vec![],
+            functions: HashMap::new(),
+        };
     }
 
     fn bind(&mut self, ops: &Vec<Operation>) -> Result<Vec<BoundOperation>, Vec<TypeError>> {
         let mut bound_ops: Vec<BoundOperation> = vec![];
         let mut errors: Vec<TypeError> = vec![];
         for op in ops {
-            match op.clone().bind(&mut self.type_stack) {
+            match op.clone().bind(&mut self.type_stack, &mut self.functions) {
                 Ok(bound_op) => bound_ops.push(bound_op),
                 Err(err) => errors.push(err),
             }
@@ -949,13 +952,55 @@ impl Binder {
 }
 
 trait Bindable {
-    fn bind(self, type_stack: &mut Vec<BoundType>) -> Result<BoundOperation, TypeError>;
+    fn bind(
+        self,
+        type_stack: &mut Vec<BoundType>,
+        functions: &mut HashMap<String, Function>,
+    ) -> Result<BoundOperation, TypeError>;
 }
 
 impl Bindable for Operation {
-    fn bind(self, type_stack: &mut Vec<BoundType>) -> Result<BoundOperation, TypeError> {
+    fn bind(
+        self,
+        type_stack: &mut Vec<BoundType>,
+        functions: &mut HashMap<String, Function>,
+    ) -> Result<BoundOperation, TypeError> {
         match self {
-            Operation::Define(_, _) => todo!(),
+            Operation::Define(function, span) => {
+                let mut sub_stack: Vec<BoundType> = vec![];
+
+                let mut bound_args: Vec<BoundType> = vec![];
+                let mut bound_rets: Vec<BoundType> = vec![];
+
+                for arg in function.clone().arguments {
+                    let bound_arg = BoundType { t: arg, span };
+                    bound_args.push(bound_arg.clone());
+                    sub_stack.push(bound_arg);
+                }
+
+                for op in function.clone().body {
+                    op.bind(&mut sub_stack, &mut functions.clone())?;
+                }
+                for ret in function.clone().returns {
+                    let bound_ret = Binder::check(&mut sub_stack, ret, &span)?;
+                    bound_rets.push(bound_ret.clone());
+                }
+                if !sub_stack.is_empty() {
+                    return Err(TypeError::NonEmptyStack(TypeStack {
+                        type_stack: sub_stack.clone(),
+                    }));
+                }
+
+                functions.insert(function.name.clone(), function.clone());
+
+                return Ok(BoundOperation {
+                    op: Operation::Define(function.clone(), span),
+                    signature: Pair {
+                        left: bound_args,
+                        right: bound_rets,
+                    },
+                });
+            }
             Operation::Pop(span) => match type_stack.pop() {
                 Some(bound_type) => {
                     return Ok(BoundOperation {
@@ -1085,7 +1130,36 @@ impl Bindable for Operation {
                     },
                 });
             }
-            Operation::Identifier(_, _) => todo!(),
+            Operation::Identifier(name, span) => {
+                if functions.contains_key(&name) {
+                    let mut bound_args: Vec<BoundType> = vec![];
+                    let mut bound_rets: Vec<BoundType> = vec![];
+                    let function = functions.get(&name).unwrap();
+
+                    for input in function.clone().arguments {
+                        let bound_arg = BoundType {
+                            t: input.clone(),
+                            span,
+                        };
+                        bound_args.push(bound_arg.clone());
+                        Binder::check(type_stack, input, &span)?;
+                    }
+                    for output in function.clone().returns {
+                        let bound_ret = BoundType { t: output, span };
+                        bound_rets.push(bound_ret.clone());
+                        type_stack.push(bound_ret);
+                    }
+                    return Ok(BoundOperation {
+                        op: Operation::Identifier(name, span),
+                        signature: Pair {
+                            left: bound_args,
+                            right: bound_rets,
+                        },
+                    });
+                } else {
+                    return Err(TypeError::UnknownIdentifier(name, span));
+                }
+            }
             Operation::Binary(binop, span) => match binop {
                 BinaryOperator::Add
                 | BinaryOperator::Sub
@@ -1111,8 +1185,24 @@ impl Bindable for Operation {
                 BinaryOperator::Gt => todo!(),
                 BinaryOperator::Lt => todo!(),
                 BinaryOperator::Eq => todo!(),
-                BinaryOperator::And => todo!(),
-                BinaryOperator::Or => todo!(),
+                BinaryOperator::And | BinaryOperator::Or => {
+                    let a = Binder::check(type_stack, Type::Bool, &span)?;
+                    let b = Binder::check(type_stack, Type::Bool, &span)?;
+
+                    let result = BoundType {
+                        t: Type::Bool,
+                        span,
+                    };
+                    type_stack.push(result.clone());
+
+                    return Ok(BoundOperation {
+                        op: Operation::Binary(binop, span),
+                        signature: Pair {
+                            left: vec![a, b],
+                            right: vec![result],
+                        },
+                    });
+                }
             },
             Operation::Unary(_, _) => todo!(),
             Operation::NoOp => {
@@ -1839,6 +1929,7 @@ enum TypeError {
     DumpTypeStack(TypeStack, Span),
     IfBranchInputMismatch(Vec<Type>, Vec<Type>, Span),
     IfBranchOutputMismatch(Vec<Type>, Vec<Type>, Span),
+    UnknownIdentifier(String, Span),
 }
 
 impl fmt::Display for TypeError {
@@ -1891,6 +1982,9 @@ impl fmt::Display for TypeError {
                 )?;
                 write!(f, " Then generates: {:?}\n", then_outputs)?;
                 write!(f, " Else generates: {:?}", else_outputs)
+            }
+            TypeError::UnknownIdentifier(name, _) => {
+                write!(f, "no such identifier `{}`", name)
             }
         }
     }
@@ -2612,6 +2706,10 @@ fn display_type_error(error: &TypeError, file_name: String, contents: &String) {
                 print_span(&bound_type.span, contents, HighlightColor::YELLOW);
                 stack_index += 1;
             }
+        }
+        TypeError::UnknownIdentifier(_, span) => {
+            println!(" at {}:{}", file_name, span);
+            print_span(span, contents, HighlightColor::RED);
         }
     }
 }
