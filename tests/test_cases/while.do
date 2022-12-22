@@ -1,1 +1,1 @@
-0 [dup 10 <] [dup print 1 +] while pop
+0 (dup 10 <) (dup print 1 +) while pop

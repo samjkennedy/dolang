@@ -30,6 +30,14 @@ impl Span {
     }
 
     fn from(start: Span, end: Span) -> Span {
+        if end.col + 2 < start.col {
+            //println!("TODO: Multi line spans");
+            return Span {
+                row: start.row,
+                col: start.col - 1,
+                len: 0,
+            };
+        }
         return Span {
             row: start.row,
             col: start.col - 1,
@@ -75,6 +83,7 @@ enum TokenKind {
     DefineKeyword,
     IfKeyword,
     WhileKeyword,
+    RangeKeyword,
     //ImportKeyword,
 
     //Syntax
@@ -108,6 +117,8 @@ enum TokenKind {
     SortKeyword,
     ReverseKeyword,
     MaxKeyword,
+    NthKeyword,
+    PartialKeyword,
 }
 #[derive(Debug, Clone, Copy)]
 struct Token {
@@ -172,6 +183,9 @@ fn lex(input: &str) -> Result<Vec<Token>, LexingError> {
         ("sort".to_string(), TokenKind::SortKeyword),
         ("reverse".to_string(), TokenKind::ReverseKeyword),
         ("max".to_string(), TokenKind::MaxKeyword),
+        ("nth".to_string(), TokenKind::NthKeyword),
+        ("partial".to_string(), TokenKind::PartialKeyword),
+        ("range".to_string(), TokenKind::RangeKeyword),
         //Meta
         ("???".to_string(), TokenKind::QuestionQuestionQuestion),
     ]);
@@ -475,7 +489,8 @@ enum Operation {
     If(Span),
     While(Span),
 
-    Sequence(Vec<Operation>, Span),
+    List(Vec<Operation>, Span),
+    Lambda(Vec<Operation>, Span),
     Run(Span),
     IntegerLiteral(i64, Span),
     BooleanLiteral(bool, Span),
@@ -499,6 +514,51 @@ enum Operation {
     Sort(Span),
     DumpTypeStack(Span),
     Reverse(Span),
+    Nth(Span),
+    Partial(Span),
+    Range(Span),
+}
+
+impl Display for Operation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Operation::Define(_, _) => write!(f, "{}", "define"),
+            Operation::Pop(_) => write!(f, "{}", "pop"),
+            Operation::Swap(_) => write!(f, "{}", "swap"),
+            Operation::Rot(_) => write!(f, "{}", "rot"),
+            Operation::Dup(_) => write!(f, "{}", "dup"),
+            Operation::Over(_) => write!(f, "{}", "over"),
+            Operation::Print(_) => write!(f, "{}", "print"),
+            Operation::If(_) => write!(f, "{}", "if"),
+            Operation::While(_) => write!(f, "{}", "while"),
+            Operation::List(_, _) => write!(f, "{}", "list"),
+            Operation::Lambda(_, _) => write!(f, "{}", "lambda"),
+            Operation::Run(_) => write!(f, "{}", "run"),
+            Operation::IntegerLiteral(_, _) => write!(f, "{}", "integer literal"),
+            Operation::BooleanLiteral(_, _) => write!(f, "{}", "boolean literal"),
+            Operation::Identifier(name, _) => write!(f, "{}", name),
+            Operation::Binary(binop, _) => write!(f, "{:?}", binop),
+            Operation::Unary(unop, _) => write!(f, "{:?}", unop),
+            Operation::NoOp => write!(f, "{}", "nop"),
+            Operation::Map(_) => write!(f, "{}", "map"),
+            Operation::Apply(_) => write!(f, "{}", "apply"),
+            Operation::Filter(_) => write!(f, "{}", "filter"),
+            Operation::Len(_) => write!(f, "{}", "length"),
+            Operation::Fold(_) => write!(f, "{}", "fold"),
+            Operation::Concat(_) => write!(f, "{}", "concatenate"),
+            Operation::Head(_) => write!(f, "{}", "head"),
+            Operation::Tail(_) => write!(f, "{}", "tail"),
+            Operation::Last(_) => write!(f, "{}", "last"),
+            Operation::Init(_) => write!(f, "{}", "initial"),
+            Operation::Cons(_) => write!(f, "{}", "construct"),
+            Operation::Sort(_) => write!(f, "{}", "sort"),
+            Operation::DumpTypeStack(_) => write!(f, "{}", "???"),
+            Operation::Reverse(_) => write!(f, "{}", "reverse"),
+            Operation::Nth(_) => write!(f, "{}", "nth"),
+            Operation::Partial(_) => write!(f, "{}", "partial"),
+            Operation::Range(_) => write!(f, "{}", "range"),
+        }
+    }
 }
 
 impl Ord for Operation {
@@ -557,6 +617,8 @@ struct Parser {
     tokens: Vec<Token>,
     operations: Vec<Operation>,
     functions: HashMap<String, Function>,
+    generics: HashMap<String, Type>,
+    generic_index: i64,
 }
 
 impl Parser {
@@ -570,6 +632,8 @@ impl Parser {
                 .collect(),
             operations: vec![],
             functions: HashMap::new(),
+            generics: HashMap::new(),
+            generic_index: 0,
         };
     }
 
@@ -605,7 +669,7 @@ impl Parser {
                 TokenKind::Bang => return Ok(Operation::Unary(UnaryOperator::Neg, span)),
                 TokenKind::OpenSquareBrace => {
                     self.cursor += 1;
-                    return Ok(self.parse_sequence()?);
+                    return Ok(self.parse_list()?);
                 }
                 TokenKind::PrintKeyword => return Ok(Operation::Print(span)),
                 TokenKind::SwapKeyword => return Ok(Operation::Swap(span)),
@@ -662,6 +726,9 @@ impl Parser {
                 TokenKind::ConsKeyword => return Ok(Operation::Cons(span)),
                 TokenKind::SortKeyword => return Ok(Operation::Sort(span)),
                 TokenKind::ReverseKeyword => return Ok(Operation::Reverse(span)),
+                TokenKind::NthKeyword => return Ok(Operation::Nth(span)),
+                TokenKind::PartialKeyword => return Ok(Operation::Partial(span)),
+                TokenKind::RangeKeyword => return Ok(Operation::Range(span)),
                 TokenKind::Identifier => {
                     let identifier = &self.source.lines().nth(span.row - 1).unwrap()
                         [span.col - 1..span.col - 1 + span.len]
@@ -669,7 +736,6 @@ impl Parser {
                     if self.functions.contains_key(identifier) {
                         return Ok(Operation::Identifier(identifier.clone(), span));
                     }
-                    println!("Funcs: {:#?}", self.functions);
                     return Err(ParseError::UnknownIdentifier(
                         identifier.clone(),
                         token.span,
@@ -690,17 +756,13 @@ impl Parser {
                     self.cursor += 1;
                     let mut args: Vec<Type> = vec![];
                     while self.current().kind != TokenKind::DashDash {
-                        let arg_type = self.parse_type();
-                        args.push(arg_type?);
-                        self.cursor += 1;
+                        self.parse_type(&mut args, TokenKind::DashDash)?;
                     }
                     self.match_token(TokenKind::DashDash)?;
                     self.cursor += 1;
                     let mut results: Vec<Type> = vec![];
                     while self.current().kind != TokenKind::CloseParenthesis {
-                        let arg_type = self.parse_type();
-                        results.push(arg_type?);
-                        self.cursor += 1;
+                        self.parse_type(&mut results, TokenKind::CloseParenthesis)?;
                     }
                     self.match_token(TokenKind::CloseParenthesis)?;
                     self.cursor += 1;
@@ -731,7 +793,10 @@ impl Parser {
                     self.functions.insert(identifier.clone(), function.clone());
                     return Ok(Operation::Define(function, span));
                 }
-                TokenKind::OpenParenthesis => todo!(),
+                TokenKind::OpenParenthesis => {
+                    self.cursor += 1;
+                    return Ok(self.parse_lambda()?);
+                }
                 TokenKind::CloseParenthesis => todo!(),
                 TokenKind::DashDash => todo!(),
                 TokenKind::IntKeyword => todo!(),
@@ -746,24 +811,55 @@ impl Parser {
         todo!()
     }
 
-    fn parse_type(&mut self) -> Result<Type, ParseError> {
-        let arg_type = match self.current().kind {
-            TokenKind::IntKeyword => Ok(Type::Int),
-            TokenKind::BoolKeyword => Ok(Type::Bool),
-            TokenKind::ListKeyword => {
-                self.cursor += 1;
-                self.match_token(TokenKind::OfKeyword)?;
-                self.cursor += 1;
-                Ok(Type::List(Box::new(self.parse_type()?)))
+    fn parse_type(
+        &mut self,
+        types: &mut Vec<Type>,
+        terminator: TokenKind,
+    ) -> Result<(), ParseError> {
+        match self.current().kind {
+            TokenKind::IntKeyword => {
+                types.push(Type::Int);
             }
-            TokenKind::AnyKeyword => Ok(Type::Any),
-            _ => Err(ParseError::UnexpectedToken(
-                TokenKind::DashDash,
-                self.current().kind,
-                self.current().span,
-            )),
-        };
-        arg_type
+            TokenKind::BoolKeyword => {
+                types.push(Type::Bool);
+            }
+            TokenKind::ListKeyword => {
+                if types.is_empty() {
+                    return Err(ParseError::UnexpectedToken(
+                        terminator,
+                        self.current().kind,
+                        self.current().span,
+                    ));
+                }
+                let el_type = types.pop().unwrap();
+                types.push(Type::List(Box::new(el_type)));
+            }
+            TokenKind::Identifier => {
+                let span = self.current().span;
+                let generic_name = &self.source.lines().nth(span.row - 1).unwrap()
+                    [span.col - 1..span.col - 1 + span.len]
+                    .to_owned();
+
+                match self.generics.get(generic_name) {
+                    Some(generic) => types.push(generic.clone()),
+                    None => {
+                        let generic = Type::Generic(self.next_generic());
+                        self.generics
+                            .insert(generic_name.to_string(), generic.clone());
+                        types.push(generic);
+                    }
+                }
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken(
+                    terminator,
+                    self.current().kind,
+                    self.current().span,
+                ));
+            }
+        }
+        self.cursor += 1;
+        Ok(())
     }
 
     fn match_token(&mut self, expected: TokenKind) -> Result<&Token, ParseError> {
@@ -784,7 +880,7 @@ impl Parser {
         return Ok(self.operations.clone());
     }
 
-    fn parse_sequence(&mut self) -> Result<Operation, ParseError> {
+    fn parse_list(&mut self) -> Result<Operation, ParseError> {
         let mut operations: Vec<Operation> = vec![];
 
         let start = self.current().span;
@@ -795,20 +891,41 @@ impl Parser {
         }
         let end = self.current().span;
 
-        return Ok(Operation::Sequence(operations, Span::from(start, end)));
+        return Ok(Operation::List(operations, Span::from(start, end)));
+    }
+
+    fn parse_lambda(&mut self) -> Result<Operation, ParseError> {
+        let mut operations: Vec<Operation> = vec![];
+
+        let start = self.current().span;
+
+        while self.current().kind != TokenKind::CloseParenthesis {
+            operations.push(self.parse_operation()?);
+            self.cursor += 1;
+        }
+        let end = self.current().span;
+
+        return Ok(Operation::Lambda(operations, Span::from(start, end)));
     }
 
     fn current(&mut self) -> &Token {
         return &self.tokens[self.cursor];
     }
+
+    fn next_generic(&mut self) -> i64 {
+        let idx = self.generic_index;
+        self.generic_index += 1;
+        return idx;
+    }
 }
 
-#[derive(Debug, PartialEq, Clone, Eq)]
+#[derive(Debug, Clone, Eq)]
 enum Type {
     Int,
     Bool,
     List(Box<Type>),
     Function(Vec<Type>, Vec<Type>),
+    Generic(i64),
     Any,
 }
 
@@ -818,9 +935,2111 @@ impl Display for Type {
             Type::Int => write!(f, "{}", "int"),
             Type::Bool => write!(f, "{}", "bool"),
             //Type::String => write!(f, "{}", "string"),
-            Type::List(el_type) => write!(f, "list of {}", el_type),
+            Type::List(el_type) => write!(f, "{} list", el_type),
             Type::Function(inputs, outputs) => write!(f, "fn ({:?} -- {:?})", inputs, outputs),
             Type::Any => write!(f, "{}", "any"),
+            Type::Generic(idx) => write!(f, "generic `{}", idx),
+        }
+    }
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::List(l0), Self::List(r0)) => {
+                return **l0 == Type::Any || **r0 == Type::Any || l0 == r0;
+            }
+            (Self::Function(l0, l1), Self::Function(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::Generic(l0), Self::Generic(r0)) => l0 == r0,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
+struct Binder {
+    type_stack: Vec<BoundType>,
+    functions: HashMap<String, Function>,
+    generics: HashMap<i64, Option<Type>>,
+}
+
+struct BoundOperation {
+    op: Operation,
+    signature: Pair<Vec<BoundType>, Vec<BoundType>>,
+}
+
+impl Binder {
+    fn new() -> Binder {
+        return Binder {
+            type_stack: vec![],
+            functions: HashMap::new(),
+            generics: HashMap::new(),
+        };
+    }
+
+    fn bind(&mut self, ops: &Vec<Operation>) -> Result<Vec<BoundOperation>, Vec<TypeError>> {
+        let mut bound_ops: Vec<BoundOperation> = vec![];
+        let mut errors: Vec<TypeError> = vec![];
+        for op in ops {
+            match op.clone().bind(
+                &mut self.type_stack,
+                &mut self.functions,
+                &mut self.generics,
+            ) {
+                Ok(bound_op) => bound_ops.push(bound_op),
+                Err(err) => errors.push(err),
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        if !self.type_stack.is_empty() {
+            return Err(vec![TypeError::NonEmptyStack(TypeStack {
+                type_stack: self.type_stack.clone(),
+            })]);
+        }
+
+        return Ok(bound_ops);
+    }
+
+    fn check(
+        type_stack: &mut Vec<BoundType>,
+        generics: &mut HashMap<i64, Option<Type>>,
+        expected: Type,
+        span: &Span,
+    ) -> Result<BoundType, TypeError> {
+        if type_stack.is_empty() {
+            return Err(TypeError::EmptyStack(expected, *span));
+        }
+        let actual = type_stack.pop().unwrap();
+
+        let mut final_expected = expected;
+
+        if let Type::Generic(idx) = final_expected {
+            //println!("Got a generic in expected! {} ", idx);
+            if generics.contains_key(&idx) {
+                match generics.get(&idx).unwrap() {
+                    Some(concrete) => {
+                        //println!("It had a concrete type {}", concrete);
+
+                        final_expected = concrete.clone();
+                    }
+                    None => {
+                        if let Type::Generic(_) = actual.t {
+                        } else {
+                            //println!("Set a concrete type of {}", actual.t);
+                            final_expected = actual.t.clone();
+                            generics.insert(idx, Some(actual.clone().t));
+                        }
+                    }
+                }
+            }
+        }
+
+        if type_equals(&actual.t, &final_expected) {
+            return Ok(actual);
+        }
+
+        return Err(TypeError::TypeMismatch(final_expected, actual, *span));
+    }
+}
+
+trait Bindable {
+    fn bind(
+        self,
+        type_stack: &mut Vec<BoundType>,
+        functions: &mut HashMap<String, Function>,
+        generics: &mut HashMap<i64, Option<Type>>,
+    ) -> Result<BoundOperation, TypeError>;
+}
+
+impl Bindable for Operation {
+    fn bind(
+        self,
+        type_stack: &mut Vec<BoundType>,
+        functions: &mut HashMap<String, Function>,
+        generics: &mut HashMap<i64, Option<Type>>,
+    ) -> Result<BoundOperation, TypeError> {
+        match self {
+            Operation::Define(function, span) => {
+                let mut sub_stack: Vec<BoundType> = vec![];
+
+                let mut bound_args: Vec<BoundType> = vec![];
+                let mut bound_rets: Vec<BoundType> = vec![];
+
+                for arg in function.clone().arguments.iter().rev() {
+                    if let Type::Generic(idx) = arg {
+                        if !generics.contains_key(&idx) {
+                            generics.insert(*idx, None);
+                        }
+                    }
+                    let bound_arg = BoundType {
+                        t: arg.clone(),
+                        span,
+                    };
+                    bound_args.push(bound_arg.clone());
+                    sub_stack.push(bound_arg);
+                }
+
+                for op in function.clone().body {
+                    op.bind(
+                        &mut sub_stack,
+                        &mut functions.clone(),
+                        &mut generics.clone(),
+                    )?;
+                }
+                for ret in function.clone().returns {
+                    if let Type::Generic(idx) = ret {
+                        if !generics.contains_key(&idx) {
+                            generics.insert(idx, None);
+                        }
+                    }
+                    let bound_ret = Binder::check(&mut sub_stack, generics, ret.clone(), &span)?;
+                    bound_rets.push(bound_ret.clone());
+                }
+                bound_rets.reverse();
+
+                if !sub_stack.is_empty() {
+                    return Err(TypeError::NonEmptyStack(TypeStack {
+                        type_stack: sub_stack.clone(),
+                    }));
+                }
+
+                functions.insert(function.name.clone(), function.clone());
+
+                return Ok(BoundOperation {
+                    op: Operation::Define(function.clone(), span),
+                    signature: Pair {
+                        left: bound_args,
+                        right: bound_rets,
+                    },
+                });
+            }
+            Operation::Pop(span) => match type_stack.pop() {
+                Some(bound_type) => {
+                    return Ok(BoundOperation {
+                        op: self,
+                        signature: Pair {
+                            left: vec![bound_type],
+                            right: vec![],
+                        },
+                    });
+                }
+                None => Err(TypeError::EmptyStack(Type::Any, span)),
+            },
+            Operation::Swap(span) => match type_stack.pop() {
+                Some(a) => match type_stack.pop() {
+                    Some(b) => {
+                        type_stack.push(a.clone());
+                        type_stack.push(b.clone());
+                        return Ok(BoundOperation {
+                            op: self,
+                            signature: Pair {
+                                left: vec![a.clone(), b.clone()],
+                                right: vec![b, a],
+                            },
+                        });
+                    }
+                    None => Err(TypeError::EmptyStack(Type::Any, span)),
+                },
+                None => Err(TypeError::EmptyStack(Type::Any, span)),
+            },
+
+            Operation::Rot(span) => match type_stack.pop() {
+                Some(a) => match type_stack.pop() {
+                    Some(b) => match type_stack.pop() {
+                        Some(c) => {
+                            type_stack.push(b.clone());
+                            type_stack.push(a.clone());
+                            type_stack.push(c.clone());
+                            return Ok(BoundOperation {
+                                op: self,
+                                signature: Pair {
+                                    left: vec![a.clone(), b.clone(), c.clone()],
+                                    right: vec![b, a, c],
+                                },
+                            });
+                        }
+                        None => Err(TypeError::EmptyStack(Type::Any, span)),
+                    },
+                    None => Err(TypeError::EmptyStack(Type::Any, span)),
+                },
+                None => Err(TypeError::EmptyStack(Type::Any, span)),
+            },
+            Operation::Dup(span) => match type_stack.pop() {
+                Some(bound_type) => {
+                    type_stack.push(bound_type.clone());
+                    type_stack.push(bound_type.clone());
+                    return Ok(BoundOperation {
+                        op: self,
+                        signature: Pair {
+                            left: vec![bound_type.clone()],
+                            right: vec![bound_type.clone(), bound_type],
+                        },
+                    });
+                }
+                None => Err(TypeError::EmptyStack(Type::Any, span)),
+            },
+            Operation::Over(span) => match type_stack.pop() {
+                Some(a) => match type_stack.pop() {
+                    Some(b) => {
+                        type_stack.push(b.clone());
+                        type_stack.push(a.clone());
+                        type_stack.push(BoundType {
+                            t: b.t.clone(),
+                            span,
+                        });
+
+                        return Ok(BoundOperation {
+                            op: Operation::Over(span),
+                            signature: Pair {
+                                left: vec![a.clone(), b.clone()],
+                                right: vec![b.clone(), a.clone(), b.clone()],
+                            },
+                        });
+                    }
+                    None => Err(TypeError::EmptyStack(Type::Any, span)),
+                },
+                None => Err(TypeError::EmptyStack(Type::Any, span)),
+            },
+            Operation::Print(span) => match type_stack.pop() {
+                Some(bound_type) => {
+                    return Ok(BoundOperation {
+                        op: self,
+                        signature: Pair {
+                            left: vec![bound_type],
+                            right: vec![],
+                        },
+                    });
+                }
+                None => Err(TypeError::EmptyStack(Type::Any, span)),
+            },
+            Operation::If(span) => match type_stack.pop() {
+                Some(else_body) => {
+                    if let Type::Function(else_ins, else_outs) = else_body.clone().t {
+                        match type_stack.pop() {
+                            Some(then_body) => {
+                                if let Type::Function(then_ins, then_outs) = then_body.clone().t {
+                                    if else_ins.len() != then_ins.len() {
+                                        return Err(TypeError::IfBranchInputMismatch(
+                                            then_ins, else_ins, span,
+                                        ));
+                                    }
+                                    if else_outs.len() != then_outs.len() {
+                                        return Err(TypeError::IfBranchOutputMismatch(
+                                            then_outs, else_outs, span,
+                                        ));
+                                    }
+                                    for i in 0..then_ins.len() {
+                                        if !type_equals(&then_ins[i], &else_ins[i]) {
+                                            return Err(TypeError::IfBranchInputMismatch(
+                                                then_ins, else_ins, span,
+                                            ));
+                                        }
+                                    }
+                                    for i in 0..then_outs.len() {
+                                        if !type_equals(&then_outs[i], &else_outs[i]) {
+                                            return Err(TypeError::IfBranchOutputMismatch(
+                                                then_outs, else_outs, span,
+                                            ));
+                                        }
+                                    }
+                                    match type_stack.pop() {
+                                        Some(condition) => {
+                                            if type_equals(&condition.t, &Type::Bool) {
+                                                let mut if_ins =
+                                                    vec![else_body, then_body, condition];
+                                                if_ins.append(&mut bind_types(
+                                                    then_ins.clone(),
+                                                    span,
+                                                ));
+
+                                                let if_outs = bind_types(then_outs, span);
+
+                                                for input in then_ins {
+                                                    Binder::check(
+                                                        type_stack, generics, input, &span,
+                                                    )?;
+                                                }
+
+                                                for out in if_outs.clone() {
+                                                    type_stack.push(out);
+                                                }
+
+                                                return Ok(BoundOperation {
+                                                    op: Operation::If(span),
+                                                    signature: Pair {
+                                                        left: if_ins,
+                                                        right: if_outs,
+                                                    },
+                                                });
+                                            } else {
+                                                return Err(TypeError::TypeMismatch(
+                                                    Type::Bool,
+                                                    condition.clone(),
+                                                    span,
+                                                ));
+                                            }
+                                        }
+                                        None => {
+                                            return Err(TypeError::EmptyStack(Type::Any, span));
+                                        }
+                                    }
+                                } else {
+                                    return Err(TypeError::TypeMismatch(
+                                        Type::Function(else_ins, else_outs),
+                                        then_body.clone(),
+                                        span,
+                                    ));
+                                }
+                            }
+                            None => {
+                                return Err(TypeError::EmptyStack(Type::Any, span));
+                            }
+                        }
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Function(vec![Type::Any], vec![Type::Any]),
+                            else_body.clone(),
+                            span,
+                        ));
+                    }
+                }
+                None => {
+                    return Err(TypeError::EmptyStack(Type::Any, span));
+                }
+            },
+            Operation::While(span) => match type_stack.pop() {
+                Some(body) => match type_stack.pop() {
+                    Some(condition) => {
+                        if let Type::Function(cond_ins, cond_outs) = condition.clone().t {
+                            if cond_outs.len() == 0 || cond_outs.last().unwrap() != &Type::Bool {
+                                return Err(TypeError::TypeMismatch(
+                                    Type::Function(vec![Type::Any], vec![Type::Bool]),
+                                    condition,
+                                    span,
+                                ));
+                            }
+
+                            if let Type::Function(body_ins, body_outs) = body.t {
+                                //TODO: ensure that the while body isn't filling up the stack
+                                return Ok(BoundOperation {
+                                    op: Operation::While(span),
+                                    signature: Pair {
+                                        left: bind_types(cond_ins, span),
+                                        right: bind_types(body_outs, span),
+                                    },
+                                });
+                            } else {
+                                return Err(TypeError::TypeMismatch(
+                                    Type::Function(vec![Type::Any], vec![Type::Any]),
+                                    condition,
+                                    span,
+                                ));
+                            }
+                        }
+                        return Err(TypeError::TypeMismatch(
+                            Type::Function(vec![Type::Any], vec![Type::Bool]),
+                            condition,
+                            span,
+                        ));
+                    }
+                    None => {
+                        return Err(TypeError::EmptyStack(
+                            Type::Function(vec![Type::Any], vec![Type::Bool]),
+                            span,
+                        ));
+                    }
+                },
+                None => {
+                    return Err(TypeError::EmptyStack(
+                        Type::Function(vec![Type::Any], vec![Type::Any]),
+                        span,
+                    ));
+                }
+            },
+            Operation::List(elements, span) | Operation::Lambda(elements, span) => {
+                match bind_sequence(&elements, &functions)? {
+                    Type::List(element_type) => {
+                        let bound_type = BoundType {
+                            t: Type::List(element_type),
+                            span,
+                        };
+                        type_stack.push(bound_type.clone());
+                        return Ok(BoundOperation {
+                            op: Operation::List(elements, span),
+                            signature: Pair {
+                                left: vec![],
+                                right: vec![bound_type],
+                            },
+                        });
+                    }
+                    Type::Function(inputs, outputs) => {
+                        let bound_type = BoundType {
+                            t: Type::Function(inputs.clone(), outputs.clone()),
+                            span,
+                        };
+                        type_stack.push(bound_type);
+                        return Ok(BoundOperation {
+                            op: Operation::Lambda(elements, span),
+                            signature: Pair {
+                                left: inputs
+                                    .iter()
+                                    .map(|t| BoundType { t: t.clone(), span })
+                                    .collect(),
+                                right: outputs
+                                    .iter()
+                                    .map(|t| BoundType { t: t.clone(), span })
+                                    .collect(),
+                            },
+                        });
+                    }
+                    _ => unreachable!("Sequence pushed neither list nor function"),
+                }
+            }
+            Operation::Run(_) => todo!(),
+
+            //TODO: use the values of i and b to do const evaluation
+            Operation::IntegerLiteral(_, span) => {
+                let bound_type = BoundType { t: Type::Int, span };
+                type_stack.push(bound_type.clone());
+                return Ok(BoundOperation {
+                    op: self,
+                    signature: Pair {
+                        left: vec![],
+                        right: vec![bound_type],
+                    },
+                });
+            }
+            Operation::BooleanLiteral(_, span) => {
+                let bound_type = BoundType {
+                    t: Type::Bool,
+                    span,
+                };
+                type_stack.push(bound_type.clone());
+                return Ok(BoundOperation {
+                    op: self,
+                    signature: Pair {
+                        left: vec![],
+                        right: vec![BoundType {
+                            t: Type::Bool,
+                            span,
+                        }],
+                    },
+                });
+            }
+            Operation::Identifier(name, span) => {
+                if functions.contains_key(&name) {
+                    let mut bound_args: Vec<BoundType> = vec![];
+                    let mut bound_rets: Vec<BoundType> = vec![];
+                    let function = functions.get(&name).unwrap();
+
+                    for input in function.clone().arguments {
+                        let bound_arg = BoundType {
+                            t: input.clone(),
+                            span,
+                        };
+                        bound_args.push(bound_arg.clone());
+                        Binder::check(type_stack, generics, input, &span)?;
+                    }
+                    for output in function.clone().returns.iter().rev() {
+                        let mut bound_ret = BoundType {
+                            t: output.clone(),
+                            span,
+                        };
+                        if let Type::Generic(idx) = bound_ret.t {
+                            if generics.contains_key(&idx) {
+                                match generics.get(&idx).unwrap() {
+                                    Some(concrete) => {
+                                        bound_ret = BoundType {
+                                            t: concrete.clone(),
+                                            span: bound_ret.span,
+                                        }
+                                    }
+                                    None => todo!(),
+                                }
+                            }
+                        }
+                        bound_rets.push(bound_ret.clone());
+                        type_stack.push(bound_ret);
+                    }
+                    return Ok(BoundOperation {
+                        op: Operation::Identifier(name, span),
+                        signature: Pair {
+                            left: bound_args,
+                            right: bound_rets,
+                        },
+                    });
+                } else {
+                    return Err(TypeError::UnknownIdentifier(name, span));
+                }
+            }
+            Operation::Binary(binop, span) => match binop {
+                BinaryOperator::Add
+                | BinaryOperator::Sub
+                | BinaryOperator::Mul
+                | BinaryOperator::Div
+                | BinaryOperator::Rem
+                | BinaryOperator::Max => {
+                    let a = Binder::check(type_stack, generics, Type::Int, &span)?;
+                    let b = Binder::check(type_stack, generics, Type::Int, &span)?;
+
+                    let result = BoundType { t: Type::Int, span };
+                    type_stack.push(result.clone());
+
+                    return Ok(BoundOperation {
+                        op: Operation::Binary(binop, span),
+                        signature: Pair {
+                            left: vec![a, b],
+                            right: vec![result],
+                        },
+                    });
+                }
+
+                BinaryOperator::Gt | BinaryOperator::Lt => {
+                    let a = Binder::check(type_stack, generics, Type::Int, &span)?;
+                    let b = Binder::check(type_stack, generics, Type::Int, &span)?;
+                    let result = BoundType {
+                        t: Type::Bool,
+                        span,
+                    };
+                    type_stack.push(result.clone());
+
+                    return Ok(BoundOperation {
+                        op: Operation::Binary(binop, span),
+                        signature: Pair {
+                            left: vec![a, b],
+                            right: vec![result],
+                        },
+                    });
+                }
+                BinaryOperator::Eq => {
+                    //TODO: Generics? Must be the same type
+                    let a = Binder::check(type_stack, generics, Type::Any, &span)?;
+                    let b = Binder::check(type_stack, generics, Type::Any, &span)?;
+
+                    let result = BoundType {
+                        t: Type::Bool,
+                        span,
+                    };
+                    type_stack.push(result.clone());
+
+                    return Ok(BoundOperation {
+                        op: Operation::Binary(binop, span),
+                        signature: Pair {
+                            left: vec![a, b],
+                            right: vec![result],
+                        },
+                    });
+                }
+                BinaryOperator::And | BinaryOperator::Or => {
+                    let a = Binder::check(type_stack, generics, Type::Bool, &span)?;
+                    let b = Binder::check(type_stack, generics, Type::Bool, &span)?;
+
+                    let result = BoundType {
+                        t: Type::Bool,
+                        span,
+                    };
+                    type_stack.push(result.clone());
+
+                    return Ok(BoundOperation {
+                        op: Operation::Binary(binop, span),
+                        signature: Pair {
+                            left: vec![a, b],
+                            right: vec![result],
+                        },
+                    });
+                }
+            },
+            Operation::Unary(_, _) => todo!(),
+            Operation::NoOp => {
+                return Ok(BoundOperation {
+                    op: Operation::NoOp,
+                    signature: Pair {
+                        left: vec![],
+                        right: vec![],
+                    },
+                });
+            }
+            Operation::Map(span) => {
+                if let Type::Function(ins, outs) = match type_stack.pop() {
+                    Some(bound_type) => Ok(bound_type.t),
+                    None => Err(TypeError::EmptyStack(Type::Any, span)),
+                }? {
+                    let mut a_span: Span = span;
+                    if let Type::List(a) = match type_stack.pop() {
+                        Some(bound_type) => {
+                            a_span = bound_type.span;
+                            Ok(bound_type.t)
+                        }
+                        None => Err(TypeError::EmptyStack(Type::Any, span)),
+                    }? {
+                        if ins.len() > 1 || !type_equals(&ins[0], &*a) {
+                            // println!("{}", "---------------------");
+                            // println!("ins: {:?}, a: {}", ins, a);
+                            // println!("{}", "---------------------");
+                            return Err(TypeError::TypeMismatch(
+                                Type::List(Box::new(ins[0].clone())),
+                                BoundType {
+                                    t: Type::List(a.clone()),
+                                    span: a_span,
+                                },
+                                span,
+                            ));
+                        }
+                        if outs.len() > 1 {
+                            //println!("2");
+                            return Err(TypeError::TypeMismatch(
+                                Type::Function(vec![*a.clone()], vec![outs[0].clone()]),
+                                BoundType {
+                                    t: outs[0].clone(),
+                                    span,
+                                },
+                                span,
+                            ));
+                        }
+                        let result = BoundType {
+                            t: Type::List(Box::new(outs[0].clone())),
+                            span,
+                        };
+                        type_stack.push(result.clone());
+                        return Ok(BoundOperation {
+                            op: Operation::Map(span),
+                            signature: Pair {
+                                left: vec![BoundType {
+                                    t: Type::List(a.clone()),
+                                    span,
+                                }],
+                                right: vec![result],
+                            },
+                        });
+                    }
+                }
+
+                todo!();
+            }
+            Operation::Apply(span) => {
+                if let Type::Function(ins, outs) = match type_stack.pop() {
+                    Some(bound_type) => Ok(bound_type.t),
+                    None => Err(TypeError::EmptyStack(Type::Any, span)),
+                }? {
+                    let mut a_span: Span = span;
+                    match match type_stack.pop() {
+                        Some(bound_type) => {
+                            a_span = bound_type.span;
+                            Ok(bound_type.t)
+                        }
+                        None => Err(TypeError::EmptyStack(Type::List(Box::new(Type::Any)), span)),
+                    }? {
+                        Type::List(a) => {
+                            if outs.len() > 1 {
+                                //println!("2");
+                                return Err(TypeError::TypeMismatch(
+                                    Type::Function(vec![*a.clone()], vec![outs[0].clone()]),
+                                    BoundType {
+                                        t: outs[0].clone(),
+                                        span,
+                                    },
+                                    span,
+                                ));
+                            }
+                            return Ok(BoundOperation {
+                                op: Operation::Map(span),
+                                signature: Pair {
+                                    left: vec![BoundType {
+                                        t: Type::List(a.clone()),
+                                        span,
+                                    }],
+                                    right: vec![],
+                                },
+                            });
+                        }
+                        other => {
+                            return Err(TypeError::TypeMismatch(
+                                Type::List(Box::new(Type::Any)),
+                                BoundType {
+                                    t: other,
+                                    span: a_span.clone(),
+                                },
+                                span,
+                            ))
+                        }
+                    }
+                }
+                unreachable!();
+            }
+            Operation::Filter(span) => match type_stack.pop() {
+                Some(condition) => {
+                    if let Type::Function(ins, outs) = condition.clone().t {
+                        if outs.len() != 1 || !type_equals(&Type::Bool, &outs[0]) {
+                            return Err(TypeError::TypeMismatch(
+                                Type::Function(ins, vec![Type::Bool]),
+                                condition,
+                                span,
+                            ));
+                        }
+
+                        match type_stack.pop() {
+                            Some(list) => {
+                                if let Type::List(el_type) = list.clone().t {
+                                    if ins.len() != 1 || !type_equals(&el_type, &ins[0]) {
+                                        return Err(TypeError::TypeMismatch(
+                                            Type::Function(vec![*el_type], vec![Type::Bool]),
+                                            condition,
+                                            span,
+                                        ));
+                                    }
+
+                                    let result = BoundType {
+                                        t: Type::List(el_type),
+                                        span: span.clone(),
+                                    };
+                                    type_stack.push(result.clone());
+
+                                    return Ok(BoundOperation {
+                                        op: Operation::Filter(span),
+                                        signature: Pair {
+                                            left: vec![condition, list],
+                                            right: vec![result],
+                                        },
+                                    });
+                                } else {
+                                    return Err(TypeError::TypeMismatch(
+                                        Type::List(Box::new(Type::Any)),
+                                        list,
+                                        span,
+                                    ));
+                                }
+                            }
+                            None => Err(TypeError::EmptyStack(Type::Any, span)),
+                        }
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Function(vec![Type::Any], vec![Type::Bool]),
+                            condition,
+                            span,
+                        ));
+                    }
+                }
+                None => Err(TypeError::EmptyStack(Type::Any, span)),
+            },
+            Operation::Len(span) => match type_stack.pop() {
+                Some(top) => {
+                    if let Type::List(_) = top.t {
+                        let result = BoundType { t: Type::Int, span };
+                        type_stack.push(result.clone());
+
+                        return Ok(BoundOperation {
+                            op: Operation::Len(span),
+                            signature: Pair {
+                                left: vec![top],
+                                right: vec![result],
+                            },
+                        });
+                    } else {
+                        Err(TypeError::TypeMismatch(
+                            Type::List(Box::new(Type::Any)),
+                            top,
+                            span,
+                        ))
+                    }
+                }
+                None => Err(TypeError::EmptyStack(Type::Any, span)),
+            },
+            Operation::Fold(span) => {
+                let mut acc_actual: Option<BoundType> = None;
+                let accumulator_type = match type_stack.pop() {
+                    Some(bound_type) => {
+                        acc_actual = Some(bound_type.clone());
+                        Ok(bound_type.t)
+                    }
+                    None => Err(TypeError::EmptyStack(Type::Any, span)),
+                }?;
+
+                let mut func_actual: Option<BoundType> = None;
+                if let Type::Function(ins, outs) = match type_stack.pop() {
+                    Some(bound_type) => {
+                        func_actual = Some(bound_type.clone());
+                        Ok(bound_type.t)
+                    }
+                    None => Err(TypeError::EmptyStack(Type::Any, span)),
+                }? {
+                    let mut list_actual: Option<BoundType> = None;
+                    if let Type::List(element_type) = match type_stack.pop() {
+                        Some(bound_type) => {
+                            list_actual = Some(bound_type.clone());
+                            Ok(bound_type.t)
+                        }
+                        None => Err(TypeError::EmptyStack(Type::Any, span)),
+                    }? {
+                        if ins.len() != 2 || outs.len() != 1 {
+                            return Err(TypeError::TypeMismatch(
+                                Type::Function(
+                                    vec![ins[0].clone(), ins[0].clone()],
+                                    vec![accumulator_type],
+                                ),
+                                func_actual.unwrap(),
+                                span,
+                            ));
+                        }
+                        if !type_equals(&element_type, &accumulator_type) {
+                            println!("element_type {}", accumulator_type);
+
+                            println!("{}", accumulator_type);
+                            return Err(TypeError::TypeMismatch(
+                                *element_type,
+                                acc_actual.unwrap(),
+                                span,
+                            ));
+                        }
+                        let result = BoundType {
+                            t: accumulator_type.clone(),
+                            span,
+                        };
+                        type_stack.push(result.clone());
+                        return Ok(BoundOperation {
+                            op: Operation::Fold(span),
+                            signature: Pair {
+                                left: vec![
+                                    BoundType {
+                                        t: accumulator_type.clone(),
+                                        span,
+                                    },
+                                    BoundType {
+                                        t: func_actual.clone().unwrap().t,
+                                        span: func_actual.unwrap().span,
+                                    },
+                                    BoundType {
+                                        t: list_actual.clone().unwrap().t,
+                                        span: list_actual.unwrap().span,
+                                    },
+                                ],
+                                right: vec![result],
+                            },
+                        });
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::List(Box::new(outs[0].clone())),
+                            list_actual.unwrap(),
+                            span,
+                        ));
+                    }
+                } else {
+                    return Err(TypeError::TypeMismatch(
+                        Type::Function(
+                            vec![Type::List(Box::new(accumulator_type.clone()))],
+                            vec![accumulator_type],
+                        ),
+                        func_actual.unwrap(),
+                        span,
+                    ));
+                }
+            }
+            Operation::Concat(_) => todo!(),
+            Operation::Head(_) => todo!(),
+            Operation::Tail(_) => todo!(),
+            Operation::Last(_) => todo!(),
+            Operation::Init(_) => todo!(),
+            Operation::Cons(_) => todo!(),
+            Operation::Sort(_) => todo!(),
+            Operation::DumpTypeStack(span) => {
+                return Err(TypeError::DumpTypeStack(
+                    TypeStack {
+                        type_stack: type_stack.to_vec(),
+                    },
+                    span.clone(),
+                ))
+            }
+            Operation::Reverse(span) => match type_stack.pop() {
+                Some(top) => {
+                    if let Type::List(el_type) = top.t {
+                        let result = BoundType {
+                            t: Type::List(el_type),
+                            span,
+                        };
+                        type_stack.push(result.clone());
+
+                        return Ok(BoundOperation {
+                            op: Operation::Reverse(span),
+                            signature: Pair {
+                                left: vec![result.clone()],
+                                right: vec![result],
+                            },
+                        });
+                    } else {
+                        return Err(TypeError::EmptyStack(Type::List(Box::new(Type::Any)), span));
+                    }
+                }
+                None => Err(TypeError::EmptyStack(Type::List(Box::new(Type::Any)), span)),
+            },
+            Operation::Nth(span) => {
+                let index = Binder::check(type_stack, generics, Type::Int, &span)?;
+                match type_stack.pop() {
+                    Some(top) => {
+                        if let Type::List(el_type) = top.clone().t {
+                            let result = BoundType {
+                                t: *el_type,
+                                span: span,
+                            };
+                            type_stack.push(result.clone());
+
+                            return Ok(BoundOperation {
+                                op: Operation::Nth(span),
+                                signature: Pair {
+                                    left: vec![index, top],
+                                    right: vec![result],
+                                },
+                            });
+                        } else {
+                            return Err(TypeError::TypeMismatch(
+                                Type::List(Box::new(Type::Any)),
+                                top,
+                                span,
+                            ));
+                        }
+                    }
+                    None => {
+                        return Err(TypeError::EmptyStack(Type::List(Box::new(Type::Any)), span));
+                    }
+                };
+            }
+            Operation::Partial(span) => match type_stack.pop() {
+                Some(top) => {
+                    if let Type::Function(ins, outs) = top.t {
+                        match type_stack.pop() {
+                            Some(arg) => {
+                                if ins.len() > 0 && type_equals(&arg.t, &ins[0]) {
+                                    type_stack.push(BoundType {
+                                        t: Type::Function(ins[1..].to_vec(), outs.clone()),
+                                        span,
+                                    });
+
+                                    return Ok(BoundOperation {
+                                        op: Operation::Partial(span),
+                                        signature: Pair {
+                                            left: bind_types(ins[1..].to_vec(), span),
+                                            right: bind_types(outs, span),
+                                        },
+                                    });
+                                }
+                                return Err(TypeError::TypeMismatch(ins[0].clone(), arg, span));
+                            }
+                            None => return Err(TypeError::EmptyStack(Type::Any, span)),
+                        }
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Function(vec![Type::Any], vec![Type::Any]),
+                            top,
+                            span,
+                        ));
+                    }
+                }
+                None => {
+                    return Err(TypeError::EmptyStack(
+                        Type::Function(vec![Type::Any], vec![Type::Any]),
+                        span,
+                    ))
+                }
+            },
+            Operation::Range(span) => {
+                let a = Binder::check(type_stack, generics, Type::Int, &span)?;
+                let b = Binder::check(type_stack, generics, Type::Int, &span)?;
+                let result = BoundType {
+                    t: Type::List(Box::new(Type::Int)),
+                    span,
+                };
+                type_stack.push(result.clone());
+
+                return Ok(BoundOperation {
+                    op: Operation::Range(span),
+                    signature: Pair {
+                        left: vec![a, b],
+                        right: vec![result],
+                    },
+                });
+            }
+        }
+    }
+}
+
+fn type_equals(a: &Type, b: &Type) -> bool {
+    //println!("a: {}, b: {}", a, b);
+    return a == &Type::Any || b == &Type::Any || a == b;
+}
+
+fn bind_types(types: Vec<Type>, span: Span) -> Vec<BoundType> {
+    let mut bound_types: Vec<BoundType> = vec![];
+
+    for t in types {
+        bound_types.push(BoundType { t, span })
+    }
+    return bound_types;
+}
+
+fn bind_sequence(
+    elements: &Vec<Operation>,
+    declared_functions: &HashMap<String, Function>,
+) -> Result<Type, TypeError> {
+    let mut is_list = true;
+    let mut el_type: Option<Type> = None;
+
+    for element in elements {
+        match element {
+            Operation::IntegerLiteral(_, _) => match el_type.clone() {
+                None => el_type = Some(Type::Int),
+                Some(t) => {
+                    if t != Type::Int {
+                        return Err(TypeError::TypeMismatch(
+                            t,
+                            BoundType {
+                                t: Type::Int,
+                                span: get_span(&element),
+                            },
+                            get_span(&element),
+                        ));
+                    }
+                }
+            },
+            Operation::BooleanLiteral(_, _) => match el_type.clone() {
+                None => el_type = Some(Type::Bool),
+                Some(t) => {
+                    if t != Type::Bool {
+                        return Err(TypeError::TypeMismatch(
+                            t,
+                            BoundType {
+                                t: Type::Bool,
+                                span: get_span(&element),
+                            },
+                            get_span(&element),
+                        ));
+                    }
+                }
+            },
+            Operation::List(ops, _) => match el_type.clone() {
+                None => el_type = Some(bind_sequence(ops, declared_functions)?),
+                Some(t) => {
+                    if let Type::List(_) = t.clone() {
+                        let actual_type = bind_sequence(ops, declared_functions)?;
+                        if !type_equals(&actual_type, &t) {
+                            return Err(TypeError::TypeMismatch(
+                                t.clone(),
+                                BoundType {
+                                    t: actual_type,
+                                    span: get_span(&element),
+                                },
+                                get_span(&element),
+                            ));
+                        }
+                        continue;
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            t.clone(),
+                            BoundType {
+                                t: Type::List(Box::new(t)),
+                                span: get_span(&element),
+                            },
+                            get_span(&element),
+                        ));
+                    }
+                }
+            },
+            _ => {
+                is_list = false;
+                break;
+            }
+        }
+    }
+
+    if !is_list {
+        return bind_lambda(elements, declared_functions);
+    }
+
+    match el_type {
+        Some(t) => return Ok(Type::List(Box::new(t))),
+        None => return Ok(Type::List(Box::new(Type::Any))),
+    }
+}
+
+fn bind_lambda(
+    elements: &Vec<Operation>,
+    declared_functions: &HashMap<String, Function>,
+) -> Result<Type, TypeError> {
+    let mut inputs: Vec<BoundType> = vec![];
+    let mut outputs: Vec<BoundType> = vec![];
+
+    let mut generic_index = 0;
+
+    let mut generics: HashMap<i64, Option<Type>> = HashMap::new();
+
+    let mut infer_types = |args: Vec<Type>,
+                           returns: Vec<BoundType>,
+                           span: &Span,
+                           inputs: &mut Vec<BoundType>,
+                           outputs: &mut Vec<BoundType>,
+                           generics: &mut HashMap<i64, Option<Type>>|
+     -> Result<(), TypeError> {
+        for arg in args {
+            if outputs.len() > 0 {
+                let output = outputs.pop().unwrap();
+                if let Type::Generic(index) = output.t {
+                    match generics.get(&index) {
+                        Some(generic) => {
+                            if let Some(gen) = generic {
+                                if !type_equals(&gen, &arg) {
+                                    return Err(TypeError::TypeMismatch(
+                                        arg,
+                                        BoundType {
+                                            t: gen.clone(),
+                                            span: span.clone(),
+                                        },
+                                        span.clone(),
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            if let Type::Generic(_) = arg {
+                            } else {
+                                generics.insert(index, Some(arg.clone()));
+                            }
+                        }
+                    }
+                } else {
+                    if !type_equals(&output.t, &arg) {
+                        return Err(TypeError::TypeMismatch(arg, output.clone(), span.clone()));
+                    }
+                }
+            } else {
+                //Else start pulling from the inputs
+                let input = inputs.pop();
+                match input {
+                    Some(mut t) => {
+                        if let Type::Generic(idx) = t.t {
+                            match generics.get(&idx).unwrap() {
+                                Some(concrete_type) => {
+                                    t.t = concrete_type.clone();
+                                }
+                                None => {}
+                            }
+                        }
+                        if !type_equals(&t.t, &arg) {
+                            return Err(TypeError::TypeMismatch(arg, t, span.clone()));
+                        }
+                    }
+                    None => {
+                        //we need to infer
+                        inputs.push(BoundType {
+                            t: arg,
+                            span: *span,
+                        });
+                    }
+                }
+            }
+        }
+
+        for ret in returns {
+            outputs.push(ret);
+        }
+        Ok(())
+    };
+
+    for element in elements {
+        // println!("ins: {:?}, outs: {:?}", inputs, outputs);
+        // println!("op: {}", element);
+        match element {
+            Operation::Dup(span) => {
+                if inputs.is_empty() && outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type = BoundType {
+                        t: generic_type.clone(),
+                        span: span.clone(),
+                    };
+                    inputs.push(bound_type.clone());
+
+                    outputs.push(bound_type.clone());
+                    outputs.push(bound_type.clone());
+                } else if outputs.len() > 0 {
+                    let typ = outputs.last().unwrap();
+                    let args = vec![typ.clone().t];
+                    let returns = vec![typ.clone(), typ.clone()];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                } else {
+                    return Err(TypeError::EmptyStack(Type::Any, span.clone()));
+                }
+            }
+            Operation::Binary(binop, span) => match binop {
+                BinaryOperator::Add
+                | BinaryOperator::Sub
+                | BinaryOperator::Mul
+                | BinaryOperator::Div
+                | BinaryOperator::Rem
+                | BinaryOperator::Max => {
+                    if inputs.is_empty() && outputs.is_empty() {
+                        let bound_type = BoundType {
+                            t: Type::Int,
+                            span: span.clone(),
+                        };
+                        inputs.push(bound_type.clone());
+                        inputs.push(bound_type.clone());
+
+                        outputs.push(bound_type);
+                    } else {
+                        let bound_type = BoundType {
+                            t: Type::Int,
+                            span: span.clone(),
+                        };
+                        let args = vec![Type::Int, Type::Int];
+                        let returns = vec![bound_type];
+
+                        infer_types(
+                            args,
+                            returns,
+                            span,
+                            &mut inputs,
+                            &mut outputs,
+                            &mut generics,
+                        )?;
+                    }
+                }
+                BinaryOperator::Eq => {
+                    if inputs.is_empty() && outputs.is_empty() {
+                        let generic_type = Type::Generic(generic_index);
+                        generic_index += 1;
+                        generics.insert(generic_index, None);
+
+                        let bound_type = BoundType {
+                            t: generic_type.clone(),
+                            span: span.clone(),
+                        };
+
+                        inputs.push(bound_type.clone());
+                        inputs.push(bound_type);
+
+                        outputs.push(BoundType {
+                            t: Type::Bool,
+                            span: span.clone(),
+                        });
+                    } else if outputs.len() > 0 {
+                        let a = outputs.last().unwrap();
+                        let b = outputs.last().unwrap();
+                        let args = vec![a.clone().t, b.clone().t];
+                        let returns = vec![BoundType {
+                            t: Type::Bool,
+                            span: span.clone(),
+                        }];
+
+                        infer_types(
+                            args,
+                            returns,
+                            span,
+                            &mut inputs,
+                            &mut outputs,
+                            &mut generics,
+                        )?;
+                    } else {
+                        return Err(TypeError::EmptyStack(Type::Any, span.clone()));
+                    }
+                }
+                BinaryOperator::Gt | BinaryOperator::Lt => {
+                    if inputs.is_empty() && outputs.is_empty() {
+                        let bound_int = BoundType {
+                            t: Type::Int,
+                            span: span.clone(),
+                        };
+                        inputs.push(bound_int.clone());
+                        inputs.push(bound_int);
+
+                        outputs.push(BoundType {
+                            t: Type::Bool,
+                            span: span.clone(),
+                        });
+                    } else {
+                        let args = vec![Type::Int, Type::Int];
+                        let returns = vec![BoundType {
+                            t: Type::Bool,
+                            span: span.clone(),
+                        }];
+
+                        infer_types(
+                            args,
+                            returns,
+                            span,
+                            &mut inputs,
+                            &mut outputs,
+                            &mut generics,
+                        )?;
+                    }
+                }
+                BinaryOperator::And | BinaryOperator::Or => {
+                    let bound_bool = BoundType {
+                        t: Type::Bool,
+                        span: span.clone(),
+                    };
+                    if inputs.is_empty() && outputs.is_empty() {
+                        inputs.push(bound_bool.clone());
+                        inputs.push(bound_bool.clone());
+
+                        outputs.push(bound_bool.clone());
+                    } else {
+                        let args = vec![Type::Bool, Type::Bool];
+                        let returns = vec![bound_bool.clone()];
+
+                        infer_types(
+                            args,
+                            returns,
+                            span,
+                            &mut inputs,
+                            &mut outputs,
+                            &mut generics,
+                        )?;
+                    }
+                }
+                _ => todo!(),
+            },
+            Operation::Print(span) => {
+                if inputs.is_empty() && outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type = BoundType {
+                        t: generic_type.clone(),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_type.clone());
+                } else if outputs.len() > 0 {
+                    let a = outputs.last().unwrap();
+                    let args = vec![a.t.clone()];
+
+                    infer_types(args, vec![], span, &mut inputs, &mut outputs, &mut generics)?;
+                } else {
+                    return Err(TypeError::EmptyStack(Type::Any, span.clone()));
+                }
+            }
+            Operation::Unary(unop, span) => match unop {
+                UnaryOperator::Neg => {
+                    let bound_bool = BoundType {
+                        t: Type::Bool,
+                        span: span.clone(),
+                    };
+                    if inputs.is_empty() && outputs.is_empty() {
+                        inputs.push(bound_bool.clone());
+
+                        outputs.push(bound_bool.clone());
+                    } else {
+                        let args = vec![Type::Bool];
+                        let returns = vec![bound_bool];
+
+                        infer_types(
+                            args,
+                            returns,
+                            span,
+                            &mut inputs,
+                            &mut outputs,
+                            &mut generics,
+                        )?;
+                    }
+                }
+            },
+            Operation::Define(_, _) => todo!(),
+            Operation::Pop(span) => {
+                if inputs.is_empty() && outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type = BoundType {
+                        t: generic_type.clone(),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_type.clone());
+                } else if outputs.len() > 0 {
+                    let a = outputs.last().unwrap();
+                    let args = vec![a.t.clone()];
+
+                    infer_types(args, vec![], span, &mut inputs, &mut outputs, &mut generics)?;
+                } else {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type = BoundType {
+                        t: generic_type.clone(),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_type.clone());
+                }
+            }
+            Operation::Swap(span) => {
+                if inputs.is_empty() && outputs.is_empty() {
+                    let generic_type_a = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+                    let generic_type_b = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type_a = BoundType {
+                        t: generic_type_a.clone(),
+                        span: span.clone(),
+                    };
+                    let bound_type_b = BoundType {
+                        t: generic_type_b.clone(),
+                        span: span.clone(),
+                    };
+                    inputs.push(bound_type_a.clone());
+                    inputs.push(bound_type_b.clone());
+
+                    outputs.push(bound_type_b.clone());
+                    outputs.push(bound_type_a.clone());
+                } else if outputs.len() > 1 {
+                    let a = outputs.pop().unwrap();
+                    let b = outputs.pop().unwrap();
+
+                    outputs.push(a);
+                    outputs.push(b);
+                } else {
+                    return Err(TypeError::EmptyStack(Type::Any, span.clone()));
+                }
+            }
+            Operation::Rot(span) => {
+                if inputs.is_empty() && outputs.is_empty() {
+                    let generic_type_a = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+                    let generic_type_b = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+                    let generic_type_c = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type_a = BoundType {
+                        t: generic_type_a.clone(),
+                        span: span.clone(),
+                    };
+                    let bound_type_b = BoundType {
+                        t: generic_type_b.clone(),
+                        span: span.clone(),
+                    };
+                    let bound_type_c = BoundType {
+                        t: generic_type_c.clone(),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_type_a.clone());
+                    inputs.push(bound_type_b.clone());
+                    inputs.push(bound_type_c.clone());
+
+                    outputs.push(bound_type_c.clone());
+                    outputs.push(bound_type_a.clone());
+                    outputs.push(bound_type_b.clone());
+                } else if outputs.len() > 2 {
+                    let a = outputs.last().unwrap();
+                    let b = &outputs[outputs.len() - 2];
+                    let c = &outputs[outputs.len() - 3];
+                    let args = vec![a.t.clone(), b.t.clone(), c.t.clone()];
+                    let returns = vec![c.clone(), a.clone(), b.clone()];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                } else {
+                    let bound_any = BoundType {
+                        t: Type::Any,
+                        span: span.clone(),
+                    };
+                    let args = vec![Type::Any, Type::Any, Type::Any];
+                    let returns = vec![bound_any.clone(), bound_any.clone(), bound_any.clone()];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                }
+            }
+            Operation::Over(span) => {
+                if inputs.is_empty() && outputs.is_empty() {
+                    let generic_type_a = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+                    let generic_type_b = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type_a = BoundType {
+                        t: generic_type_a.clone(),
+                        span: span.clone(),
+                    };
+                    let bound_type_b = BoundType {
+                        t: generic_type_b.clone(),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_type_a.clone());
+                    inputs.push(bound_type_b.clone());
+
+                    outputs.push(bound_type_b.clone());
+                    outputs.push(bound_type_a.clone());
+                    outputs.push(bound_type_b.clone());
+                } else if outputs.len() > 1 {
+                    let a = outputs.last().unwrap();
+                    let b = &outputs[outputs.len() - 2];
+                    let args = vec![a.t.clone(), b.t.clone()];
+                    let returns = vec![b.clone(), a.clone(), b.clone()];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                } else {
+                    return Err(TypeError::EmptyStack(Type::Any, span.clone()));
+                }
+            }
+            Operation::If(_) => todo!(),
+            Operation::While(_) => todo!(),
+            Operation::List(ops, span) => {
+                if ops.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    let bound_type = BoundType {
+                        t: Type::List(Box::new(generic_type.clone())),
+                        span: span.clone(),
+                    };
+                    generic_index += 1;
+                    outputs.push(bound_type.clone());
+                    continue;
+                }
+                let el_type = match ops[0] {
+                    Operation::IntegerLiteral(_, _) => Type::Int,
+                    Operation::BooleanLiteral(_, _) => Type::Bool,
+                    Operation::List(_, _) => todo!(),
+                    _ => unreachable!(),
+                };
+                let bound_type = BoundType {
+                    t: Type::List(Box::new(el_type.clone())),
+                    span: span.clone(),
+                };
+                if inputs.is_empty() && outputs.is_empty() {
+                    outputs.push(bound_type.clone());
+                } else {
+                    let args = vec![];
+                    let returns = vec![bound_type.clone()];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                }
+            }
+            Operation::Lambda(ops, span) => {
+                //TODO: create a substack and then adjust the inputs/outputs
+                bind_lambda(&ops, declared_functions)?;
+            }
+            Operation::Run(_) => todo!(),
+            Operation::IntegerLiteral(_, span) => {
+                let bound_int = BoundType {
+                    t: Type::Int,
+                    span: span.clone(),
+                };
+                if inputs.is_empty() && outputs.is_empty() {
+                    outputs.push(bound_int);
+                } else {
+                    let args = vec![];
+                    let returns = vec![bound_int];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                }
+            }
+            Operation::BooleanLiteral(_, span) => {
+                let bound_bool = BoundType {
+                    t: Type::Bool,
+                    span: span.clone(),
+                };
+                if inputs.is_empty() && outputs.is_empty() {
+                    outputs.push(bound_bool);
+                } else {
+                    let args = vec![];
+                    let returns = vec![bound_bool];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                }
+            }
+            Operation::Identifier(name, span) => {
+                let function = declared_functions.get(name).unwrap();
+                if inputs.is_empty() && outputs.is_empty() {
+                    for arg in &function.arguments {
+                        let bound_arg = BoundType {
+                            t: arg.clone(),
+                            span: span.clone(),
+                        };
+                        inputs.push(bound_arg.clone());
+                    }
+                    for ret in &function.returns {
+                        let bound_ret = BoundType {
+                            t: ret.clone(),
+                            span: span.clone(),
+                        };
+                        outputs.push(bound_ret.clone());
+                    }
+                } else {
+                    let args = &function.arguments;
+                    let returns = &function.returns;
+
+                    infer_types(
+                        args.to_vec(),
+                        bind_types(returns.to_vec(), span.clone()),
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                }
+            }
+            Operation::NoOp => {}
+            Operation::Map(_) => todo!(),
+            Operation::Apply(span) => {
+                if outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_list_type = BoundType {
+                        t: Type::List(Box::new(generic_type.clone())),
+                        span: span.clone(),
+                    };
+
+                    let bound_fn_type = BoundType {
+                        t: Type::Function(vec![generic_type], vec![]),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_list_type);
+                    inputs.push(bound_fn_type);
+                } else if outputs.len() == 1 {
+                    if let Type::Function(ins, outs) = &outputs.last().unwrap().t {
+                        todo!()
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Function(vec![Type::Any], vec![]),
+                            outputs.last().unwrap().clone(),
+                            span.clone(),
+                        ));
+                    }
+                } else if outputs.len() > 1 {
+                    if let Type::Function(ins, outs) = &outputs.last().unwrap().t {
+                        todo!()
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Function(vec![Type::Any], vec![]),
+                            outputs.last().unwrap().clone(),
+                            span.clone(),
+                        ));
+                    }
+                }
+            }
+            Operation::Filter(span) => {
+                if outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_list_type = BoundType {
+                        t: Type::List(Box::new(generic_type.clone())),
+                        span: span.clone(),
+                    };
+
+                    let bound_fn_type = BoundType {
+                        t: Type::Function(vec![generic_type], vec![Type::Bool]),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_list_type.clone());
+                    inputs.push(bound_fn_type);
+
+                    outputs.push(bound_list_type);
+                } else {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_list_type = BoundType {
+                        t: Type::List(Box::new(generic_type.clone())),
+                        span: span.clone(),
+                    };
+
+                    let args = vec![
+                        Type::Function(vec![generic_type.clone()], vec![Type::Bool]),
+                        Type::List(Box::new(generic_type.clone())),
+                    ];
+                    let returns = vec![bound_list_type];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                }
+            }
+            Operation::Len(span) => {
+                if outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type = BoundType {
+                        t: Type::List(Box::new(generic_type)),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_type);
+
+                    outputs.push(BoundType {
+                        t: Type::Int,
+                        span: span.clone(),
+                    });
+                } else if outputs.len() > 0 {
+                    let a = outputs.last().unwrap();
+                    let args = vec![a.t.clone()];
+                    let returns = vec![BoundType {
+                        t: Type::Int,
+                        span: span.clone(),
+                    }];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                } else {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+                    let args = vec![Type::List(Box::new(generic_type))];
+                    let returns = vec![BoundType {
+                        t: Type::Int,
+                        span: span.clone(),
+                    }];
+
+                    infer_types(
+                        args,
+                        returns,
+                        span,
+                        &mut inputs,
+                        &mut outputs,
+                        &mut generics,
+                    )?;
+                }
+            }
+            Operation::Fold(_) => todo!(),
+            Operation::Concat(span) => {
+                if inputs.is_empty() && outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_type = BoundType {
+                        t: Type::List(Box::new(generic_type)),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(bound_type.clone());
+                    inputs.push(bound_type.clone());
+
+                    outputs.push(bound_type.clone());
+                } else if outputs.len() > 0 {
+                    if let Type::List(el) = &outputs.last().unwrap().t {
+                        let args = vec![Type::List(el.clone()), Type::List(el.clone())];
+                        let returns = vec![BoundType {
+                            t: Type::List(el.clone()),
+                            span: span.clone(),
+                        }];
+                        infer_types(
+                            args,
+                            returns,
+                            span,
+                            &mut inputs,
+                            &mut outputs,
+                            &mut generics,
+                        )?;
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::List(Box::new(Type::Any)),
+                            outputs.last().unwrap().clone(),
+                            span.clone(),
+                        ));
+                    }
+                } else {
+                    return Err(TypeError::EmptyStack(Type::Any, span.clone()));
+                }
+            }
+            Operation::Head(_) => todo!(),
+            Operation::Tail(_) => todo!(),
+            Operation::Last(_) => todo!(),
+            Operation::Init(_) => todo!(),
+            Operation::Cons(_) => todo!(),
+            Operation::Sort(_) => todo!(),
+            Operation::DumpTypeStack(span) => {
+                return Err(TypeError::DumpTypeStack(
+                    TypeStack {
+                        type_stack: outputs,
+                    },
+                    span.clone(),
+                ));
+            }
+            Operation::Reverse(_) => todo!(),
+            Operation::Nth(span) => {
+                if outputs.is_empty() {
+                    let generic_type = Type::Generic(generic_index);
+                    generic_index += 1;
+                    generics.insert(generic_index, None);
+
+                    let bound_el_type = BoundType {
+                        t: generic_type.clone(),
+                        span: span.clone(),
+                    };
+
+                    let bound_list_type = BoundType {
+                        t: Type::List(Box::new(generic_type.clone())),
+                        span: span.clone(),
+                    };
+
+                    inputs.push(BoundType {
+                        t: Type::Int,
+                        span: span.clone(),
+                    });
+                    inputs.push(bound_list_type);
+
+                    outputs.push(bound_el_type.clone());
+                } else if outputs.len() > 1 {
+                    if type_equals(&Type::Int, &outputs.last().unwrap().t) {
+                        if let Type::List(el) = &outputs.last().unwrap().t {
+                            let args = vec![Type::Int, Type::List(el.clone())];
+
+                            let bound_type = BoundType {
+                                t: *el.clone(),
+                                span: span.clone(),
+                            };
+
+                            let returns = vec![bound_type];
+                            infer_types(
+                                args,
+                                returns,
+                                span,
+                                &mut inputs,
+                                &mut outputs,
+                                &mut generics,
+                            )?;
+                        } else if type_equals(
+                            &Type::List(Box::new(Type::Any)),
+                            &outputs.last().unwrap().t,
+                        ) {
+                            let args = vec![Type::Int, Type::List(Box::new(Type::Any))];
+
+                            let bound_type = BoundType {
+                                t: Type::Any,
+                                span: span.clone(),
+                            };
+
+                            let returns = vec![bound_type];
+                            infer_types(
+                                args,
+                                returns,
+                                span,
+                                &mut inputs,
+                                &mut outputs,
+                                &mut generics,
+                            )?;
+                        } else {
+                            return Err(TypeError::TypeMismatch(
+                                Type::List(Box::new(Type::Any)),
+                                outputs.last().unwrap().clone(),
+                                span.clone(),
+                            ));
+                        }
+                    } else {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Int,
+                            outputs.last().unwrap().clone(),
+                            span.clone(),
+                        ));
+                    }
+                } else {
+                    return Err(TypeError::EmptyStack(Type::Any, span.clone()));
+                }
+            }
+            Operation::Partial(span) => {
+                if outputs.is_empty() {
+                    let function = Type::Function(vec![Type::Any], vec![Type::Any]);
+                    let arg = Type::Any;
+                }
+            }
+            Operation::Range(span) => {
+                if outputs.is_empty() {
+                    let bound_int = BoundType {
+                        t: Type::Int,
+                        span: span.clone(),
+                    };
+                    inputs.push(bound_int.clone());
+                    inputs.push(bound_int.clone());
+
+                    outputs.push(BoundType {
+                        t: Type::List(Box::new(Type::Int)),
+                        span: span.clone(),
+                    });
+                } else if outputs.len() == 1 {
+                    if !type_equals(&outputs.last().unwrap().t, &Type::Int) {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Int,
+                            outputs.last().unwrap().clone(),
+                            span.clone(),
+                        ));
+                    }
+                    let bound_int = BoundType {
+                        t: Type::Int,
+                        span: span.clone(),
+                    };
+                    inputs.push(bound_int.clone());
+
+                    outputs.pop();
+                    outputs.push(BoundType {
+                        t: Type::List(Box::new(Type::Int)),
+                        span: span.clone(),
+                    });
+                } else {
+                    if !type_equals(&outputs.pop().unwrap().t, &Type::Int) {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Int,
+                            outputs.last().unwrap().clone(),
+                            span.clone(),
+                        ));
+                    }
+
+                    if !type_equals(&outputs.pop().unwrap().t, &Type::Int) {
+                        return Err(TypeError::TypeMismatch(
+                            Type::Int,
+                            outputs.last().unwrap().clone(),
+                            span.clone(),
+                        ));
+                    }
+                    let bound_int = BoundType {
+                        t: Type::Int,
+                        span: span.clone(),
+                    };
+                    inputs.push(bound_int.clone());
+                    inputs.push(bound_int.clone());
+
+                    outputs.push(BoundType {
+                        t: Type::List(Box::new(Type::Int)),
+                        span: span.clone(),
+                    });
+                }
+            }
+        }
+        //println!("ins: {:?}, outs: {:?}", inputs, outputs);
+    }
+
+    //erase generics
+    for i in 0..inputs.len() {
+        erase_generics(&mut inputs[i], &generics);
+    }
+    for i in 0..outputs.len() {
+        erase_generics(&mut outputs[i], &generics);
+    }
+
+    return Ok(Type::Function(
+        inputs.iter().map(|bt| bt.t.clone()).collect(),
+        outputs.iter().map(|bt| bt.t.clone()).collect(),
+    ));
+}
+
+fn erase_generics(bound_type: &mut BoundType, generics: &HashMap<i64, Option<Type>>) {
+    //println!("erasing {}", bound_type);
+    if let Type::Generic(idx) = bound_type.t {
+        match generics.get(&idx) {
+            Some(concrete) => match concrete {
+                Some(concrete) => bound_type.t = concrete.clone(),
+                None => bound_type.t = Type::Any,
+            },
+            None => bound_type.t = Type::Any,
+        }
+    } else if let Type::List(el) = &bound_type.t {
+        erase_generics(
+            &mut BoundType {
+                t: *el.clone(),
+                span: bound_type.span.clone(),
+            },
+            generics,
+        )
+    } else if let Type::Function(ins, outs) = &bound_type.t {
+        for input in ins {
+            erase_generics(
+                &mut BoundType {
+                    t: input.clone(),
+                    span: bound_type.span.clone(),
+                },
+                generics,
+            )
+        }
+
+        for output in outs {
+            erase_generics(
+                &mut BoundType {
+                    t: output.clone(),
+                    span: bound_type.span.clone(),
+                },
+                generics,
+            )
         }
     }
 }
@@ -832,6 +3051,7 @@ enum TypeError {
     DumpTypeStack(TypeStack, Span),
     IfBranchInputMismatch(Vec<Type>, Vec<Type>, Span),
     IfBranchOutputMismatch(Vec<Type>, Vec<Type>, Span),
+    UnknownIdentifier(String, Span),
 }
 
 impl fmt::Display for TypeError {
@@ -885,6 +3105,9 @@ impl fmt::Display for TypeError {
                 write!(f, " Then generates: {:?}\n", then_outputs)?;
                 write!(f, " Else generates: {:?}", else_outputs)
             }
+            TypeError::UnknownIdentifier(name, _) => {
+                write!(f, "no such identifier `{}`", name)
+            }
         }
     }
 }
@@ -901,1040 +3124,15 @@ impl Display for BoundType {
     }
 }
 
-#[derive(Clone)]
-struct TypeChecker {
-    type_stack: Vec<BoundType>,
-    known_functions: HashMap<String, BoundFunction>,
-    generics: HashMap<String, Type>,
-}
-
-#[derive(Clone)]
-struct BoundFunction {
-    inputs: Vec<Type>,
-    outputs: Vec<Type>,
-}
-
 //For printing
 struct TypeStack {
     type_stack: Vec<BoundType>,
-}
-
-impl Display for TypeStack {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for bound_type in self.type_stack.iter().rev() {
-            write!(f, "{}: introduced at {}\n", bound_type.t, bound_type.span)?;
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Eq, PartialOrd, Ord)]
 struct Pair<L, R> {
     left: L,
     right: R,
-}
-
-impl TypeChecker {
-    fn check_type(expected: Type, actual: Option<BoundType>, span: Span) -> Result<(), TypeError> {
-        match actual {
-            Some(bound_type) => {
-                if let Type::Function(inputs, outputs) = bound_type.clone().t {
-                    if let Type::Function(args, returns) = expected.clone() {
-                        if inputs.len() != args.len() || outputs.len() != returns.len() {
-                            //println!("1");
-                            return Err(TypeError::TypeMismatch(expected, bound_type, span));
-                        }
-                        for i in 0..inputs.len() {
-                            let input = inputs[i].clone();
-                            let arg = args[i].clone();
-
-                            if !(input == Type::Any || arg == Type::Any || input == arg) {
-                                //println!("2");
-                                return Err(TypeError::TypeMismatch(expected, bound_type, span));
-                            }
-                        }
-                        for i in 0..outputs.len() {
-                            let output = outputs[i].clone();
-                            let ret = returns[i].clone();
-
-                            if !(output == Type::Any || ret == Type::Any || output == ret) {
-                                //println!("3");
-                                return Err(TypeError::TypeMismatch(expected, bound_type, span));
-                            }
-                        }
-                        return Ok(());
-                    } else if expected != Type::Any {
-                        //println!("4");
-                        return Err(TypeError::TypeMismatch(expected, bound_type, span));
-                    }
-                }
-
-                if let Type::List(actual_el_type) = bound_type.t.clone() {
-                    if let Type::List(expected_el_type) = expected.clone() {
-                        //Recursively check in case of List(List(Any)) and List(List(Int))
-                        if let Err(_) = TypeChecker::check_type(
-                            *expected_el_type,
-                            Some(BoundType {
-                                t: *actual_el_type,
-                                span: span,
-                            }),
-                            span,
-                        ) {
-                            return Err(TypeError::TypeMismatch(expected, bound_type, span));
-                        }
-                        return Ok(());
-                    } else if expected != Type::Any {
-                        // println!("5");
-                        return Err(TypeError::TypeMismatch(expected, bound_type, span));
-                    }
-                }
-
-                if bound_type.t != Type::Any && expected != Type::Any && bound_type.t != expected {
-                    //println!("6");
-                    return Err(TypeError::TypeMismatch(expected, bound_type, span));
-                }
-                return Ok(());
-            }
-            None => return Err(TypeError::EmptyStack(expected, span)),
-        }
-    }
-
-    fn type_check_parsed_program(&mut self, program: &Vec<Operation>) -> Result<(), TypeError> {
-        let mut cursor = 0;
-
-        let mut type_stack_stack: Vec<Vec<BoundType>> = vec![];
-
-        let is_in_sequence = |type_stack_stack: Vec<Vec<BoundType>>| {
-            return type_stack_stack.len() > 0;
-        };
-
-        while cursor < program.len() {
-            //println!("{:#?}", program);
-            let op = &program[cursor];
-            self.type_check_op(
-                op,
-                is_in_sequence(type_stack_stack.clone()),
-                &mut type_stack_stack,
-            )?;
-            cursor += 1;
-        }
-
-        if !self.type_stack.is_empty() {
-            return Err(TypeError::NonEmptyStack(TypeStack {
-                type_stack: self.type_stack.clone(),
-            }));
-        }
-
-        Ok(())
-    }
-
-    fn get_signature(&mut self, op: &Operation) -> Pair<Vec<Type>, Vec<Type>> {
-        match op {
-            Operation::Define(_, _) => todo!(),
-            Operation::Pop(_) => {
-                return Pair {
-                    left: vec![Type::Any],
-                    right: vec![],
-                }
-            }
-            Operation::Swap(_) => todo!(),
-            Operation::Rot(_) => todo!(),
-            Operation::Dup(_) => {
-                return Pair {
-                    left: vec![Type::Any],
-                    right: vec![Type::Any, Type::Any],
-                }
-            }
-            Operation::Over(_) => {
-                return Pair {
-                    left: vec![Type::Any, Type::Any],
-                    right: vec![Type::Any, Type::Any, Type::Any],
-                }
-            }
-            Operation::Print(_) => {
-                return Pair {
-                    left: vec![Type::Any],
-                    right: vec![],
-                }
-            }
-            Operation::If(_) => {
-                return Pair {
-                    left: vec![
-                        Type::Bool,
-                        Type::Function(vec![], vec![]),
-                        Type::Function(vec![], vec![]),
-                    ],
-                    right: vec![],
-                }
-            }
-            Operation::While(_) => todo!(),
-            Operation::Sequence(ops, _) => {
-                let mut list = true;
-                let mut list_type: Option<Type> = None;
-                for op in ops {
-                    if list {
-                        match op {
-                            Operation::IntegerLiteral(_, _) => match list_type.clone() {
-                                Some(el_type) => {
-                                    if el_type != Type::Int {
-                                        list_type = Some(Type::Any)
-                                    }
-                                }
-                                None => list_type = Some(Type::Int),
-                            },
-                            Operation::BooleanLiteral(_, _) => match list_type.clone() {
-                                Some(el_type) => {
-                                    if el_type != Type::Bool {
-                                        list_type = Some(Type::Any)
-                                    }
-                                }
-                                None => list_type = Some(Type::Bool),
-                            },
-                            // Operation::StringLiteral(_, _) => match list_type.clone() {
-                            //     Some(el_type) => {
-                            //         if el_type != Type::String {
-                            //             list_type = Some(Type::Any)
-                            //         }
-                            //     }
-                            //     None => list_type = Some(Type::String),
-                            // },
-                            _ => list = false,
-                        }
-                    }
-                }
-                if list {
-                    match list_type {
-                        Some(t) => {
-                            return Pair {
-                                left: vec![],
-                                right: vec![Type::List(Box::new(t))],
-                            }
-                        }
-                        None => {
-                            return Pair {
-                                left: vec![],
-                                right: vec![Type::List(Box::new(Type::Any))], //TODO: "None", "Unit", or "Void" type, perhaps?
-                            };
-                        }
-                    }
-                }
-                return Pair {
-                    left: vec![],
-                    right: vec![],
-                };
-            }
-            Operation::Run(_) => todo!(),
-            Operation::IntegerLiteral(_, _) => {
-                return Pair {
-                    left: vec![],
-                    right: vec![Type::Int],
-                }
-            }
-            Operation::BooleanLiteral(_, _) => {
-                return Pair {
-                    left: vec![],
-                    right: vec![Type::Bool],
-                }
-            }
-            // Operation::StringLiteral(_, _) => {
-            //     return Pair {
-            //         left: vec![],
-            //         right: vec![Type::String],
-            //     }
-            // }
-            Operation::Identifier(name, _) => {
-                let function = self.known_functions.get(name).unwrap(); //If this blows up I didn't parse the program right
-
-                return Pair {
-                    left: function.inputs.clone(),
-                    right: function.outputs.clone(),
-                };
-            }
-            Operation::Binary(binop, _) => match binop {
-                BinaryOperator::Add
-                | BinaryOperator::Sub
-                | BinaryOperator::Mul
-                | BinaryOperator::Div
-                | BinaryOperator::Rem
-                | BinaryOperator::Max => {
-                    return Pair {
-                        left: vec![Type::Int, Type::Int],
-                        right: vec![Type::Int],
-                    }
-                }
-                BinaryOperator::Gt | BinaryOperator::Lt => {
-                    return Pair {
-                        left: vec![Type::Int, Type::Int],
-                        right: vec![Type::Bool],
-                    }
-                }
-                BinaryOperator::Eq => {
-                    return Pair {
-                        left: vec![Type::Any, Type::Any],
-                        right: vec![Type::Bool],
-                    }
-                }
-                BinaryOperator::And | BinaryOperator::Or => {
-                    return Pair {
-                        left: vec![Type::Bool, Type::Bool],
-                        right: vec![Type::Bool],
-                    }
-                }
-            },
-            Operation::Unary(op, _) => match op {
-                UnaryOperator::Neg => {
-                    return Pair {
-                        left: vec![Type::Bool],
-                        right: vec![Type::Bool],
-                    }
-                }
-            },
-            Operation::NoOp => todo!(),
-            Operation::Map(_) => {
-                return Pair {
-                    left: vec![
-                        Type::Function(vec![Type::Any], vec![Type::Any]),
-                        Type::List(Box::new(Type::Any)),
-                    ],
-                    right: vec![Type::List(Box::new(Type::Any))],
-                }
-            }
-            Operation::Apply(_) => {
-                return Pair {
-                    left: vec![Type::Function(vec![Type::Any], vec![])],
-                    right: vec![],
-                }
-            }
-            Operation::Filter(_) => todo!(),
-            Operation::Len(_) => {
-                return Pair {
-                    left: vec![Type::List(Box::new(Type::Any))],
-                    right: vec![Type::Int],
-                }
-            }
-            Operation::Fold(_) => {
-                return Pair {
-                    left: vec![
-                        Type::Any,
-                        Type::Function(vec![Type::Any, Type::Any], vec![Type::Any]),
-                        Type::List(Box::new(Type::Any)),
-                    ],
-                    right: vec![Type::Any],
-                };
-            }
-            Operation::Concat(_) => {
-                //TODO: You now cannot concat two functions - may need separate keyword or a supertype Sequence
-                return Pair {
-                    left: vec![
-                        Type::List(Box::new(Type::Any)),
-                        Type::List(Box::new(Type::Any)),
-                    ],
-                    right: vec![Type::List(Box::new(Type::Any))],
-                };
-            }
-            Operation::Head(_) => todo!(),
-            Operation::Tail(_) => todo!(),
-            Operation::Last(_) => todo!(),
-            Operation::Init(_) => todo!(),
-            Operation::Cons(_) => {
-                return Pair {
-                    left: vec![
-                        Type::List(Box::new(Type::Any)),
-                        Type::List(Box::new(Type::Any)),
-                    ],
-                    right: vec![Type::List(Box::new(Type::Any))],
-                };
-            }
-            //Operation::Import(_, _) => todo!(),
-            Operation::Sort(_) => {
-                return Pair {
-                    left: vec![Type::List(Box::new(Type::Any))],
-                    right: vec![Type::List(Box::new(Type::Any))],
-                };
-            }
-            Operation::Reverse(_) => todo!(),
-            Operation::DumpTypeStack(_) => todo!(),
-        }
-    }
-
-    fn type_check_op(
-        &mut self,
-        op: &Operation,
-        is_in_sequence: bool,
-        type_stack_stack: &mut Vec<Vec<BoundType>>,
-    ) -> Result<(), TypeError> {
-        Ok(match op {
-            Operation::Define(function, span) => {
-                self.known_functions.insert(
-                    function.name.clone(),
-                    BoundFunction {
-                        inputs: function.arguments.clone(),
-                        outputs: function.returns.clone(),
-                    },
-                );
-
-                let current_stack = self.type_stack.clone();
-                self.type_stack.clear();
-
-                //Simulate stack
-                for arg_type in function.clone().arguments {
-                    self.type_stack.push(BoundType {
-                        t: arg_type,
-                        span: Span::empty(),
-                    });
-                }
-                //Simulate body
-                for op in function.clone().body {
-                    self.type_check_op(&op, is_in_sequence, type_stack_stack)?;
-                }
-                //Check resulting stack
-                for return_type in function.clone().returns {
-                    let top = self.type_stack.pop();
-                    TypeChecker::check_type(return_type, top, *span)?;
-                }
-                if !self.type_stack.is_empty() {
-                    return Err(TypeError::NonEmptyStack(TypeStack {
-                        type_stack: self.type_stack.clone(),
-                    }));
-                }
-
-                self.type_stack = current_stack;
-            }
-            Operation::Print(span) | Operation::Pop(span) => {
-                self.type_check_top(is_in_sequence, Type::Any, span)?;
-            }
-            Operation::Swap(span) => {
-                let a = self.type_check_top(is_in_sequence, Type::Any, span)?;
-                let b = self.type_check_top(is_in_sequence, Type::Any, span)?;
-                self.type_stack.push(BoundType {
-                    t: a.clone().unwrap().t,
-                    span: a.clone().unwrap().span,
-                });
-                self.type_stack.push(BoundType {
-                    t: b.clone().unwrap().t,
-                    span: b.clone().unwrap().span,
-                });
-            }
-            Operation::Rot(span) => {
-                let a = self.type_check_top(is_in_sequence, Type::Any, span)?;
-                let b = self.type_check_top(is_in_sequence, Type::Any, span)?;
-                let c = self.type_check_top(is_in_sequence, Type::Any, span)?;
-                self.type_stack.push(BoundType {
-                    t: b.clone().unwrap().t,
-                    span: b.clone().unwrap().span,
-                });
-                self.type_stack.push(BoundType {
-                    t: a.clone().unwrap().t,
-                    span: a.clone().unwrap().span,
-                });
-                self.type_stack.push(BoundType {
-                    t: c.clone().unwrap().t,
-                    span: c.clone().unwrap().span,
-                });
-            }
-            Operation::Dup(span) => {
-                let top = self.type_check_top(is_in_sequence, Type::Any, span)?;
-                self.type_stack.push(BoundType {
-                    t: top.clone().unwrap().t,
-                    span: top.clone().unwrap().span,
-                });
-                self.type_stack.push(BoundType {
-                    t: top.clone().unwrap().t,
-                    span: top.clone().unwrap().span,
-                });
-            }
-            Operation::Over(span) => {
-                let b = self.type_check_top(is_in_sequence, Type::Any, span)?;
-                let a = self.type_check_top(is_in_sequence, Type::Any, span)?;
-                self.type_stack.push(BoundType {
-                    t: a.clone().unwrap().t,
-                    span: a.clone().unwrap().span,
-                });
-                self.type_stack.push(BoundType {
-                    t: b.clone().unwrap().t,
-                    span: b.unwrap().span,
-                });
-                self.type_stack.push(BoundType {
-                    t: a.clone().unwrap().t,
-                    span: a.unwrap().span,
-                });
-            }
-            Operation::Sequence(ops, span) => {
-                type_stack_stack.push(self.type_stack.clone());
-                self.type_stack.clear();
-
-                let mut inputs: Vec<Type> = vec![];
-                let mut outputs: Vec<Type> = vec![];
-
-                let (list, list_type) = parse_seq_type(ops);
-
-                for op in ops {
-                    self.apply(op, &mut inputs, &mut outputs)?;
-
-                    //println!("{:?}", op);
-                    self.type_check_op(op, true, type_stack_stack)?;
-                    //println!("{:?}", self.type_stack);
-                }
-
-                self.type_stack = type_stack_stack.pop().unwrap();
-
-                if list {
-                    match list_type {
-                        Some(t) => self.type_stack.push(BoundType {
-                            t: Type::List(Box::new(t)),
-                            span: *span,
-                        }),
-                        None => self.type_stack.push(BoundType {
-                            t: Type::List(Box::new(Type::Any)), //TODO: also void, unit or none type?
-                            span: *span,
-                        }),
-                    }
-                } else {
-                    self.type_stack.push(BoundType {
-                        t: Type::Function(inputs, outputs),
-                        span: *span,
-                    });
-                }
-            }
-            Operation::Run(span) => {
-                let seq = self
-                    .type_check_top(is_in_sequence, Type::Any, span)?
-                    .unwrap()
-                    .t;
-                match seq {
-                    Type::Function(inputs, outputs) => {
-                        for input in inputs {
-                            self.type_check_top(is_in_sequence, input, span)?;
-                        }
-                        for output in outputs {
-                            self.type_stack.push(BoundType {
-                                t: output,
-                                span: *span,
-                            });
-                        }
-                    }
-                    // Type::List(els) => {
-                    //     for el in els {
-                    //         self.type_stack.push(BoundType {
-                    //             t: el,
-                    //             span: span,
-                    //         });
-                    //     }
-                    // }
-                    _ => panic!("Messed up type checking for run"),
-                }
-            }
-            Operation::IntegerLiteral(_, span) => {
-                self.type_stack.push(BoundType {
-                    t: Type::Int,
-                    span: *span,
-                });
-            }
-            Operation::BooleanLiteral(_, span) => {
-                self.type_stack.push(BoundType {
-                    t: Type::Bool,
-                    span: *span,
-                });
-            }
-
-            // Operation::StringLiteral(_, span) => {
-            //     self.type_stack.push(BoundType {
-            //         t: Type::String,
-            //         span: *span,
-            //     });
-            // }
-            Operation::Identifier(identifier, span) => {
-                if let Some(function) = self.clone().known_functions.get(identifier) {
-                    for arg_type in function.inputs.clone() {
-                        self.type_check_top(is_in_sequence, arg_type, span)?;
-                    }
-
-                    for result_type in function.outputs.clone() {
-                        self.type_stack.push(BoundType {
-                            t: result_type,
-                            span: *span,
-                        });
-                    }
-                } else {
-                    panic!("Type checker can't find the function `{}`", identifier);
-                }
-            }
-            Operation::Binary(op, span) => match op {
-                BinaryOperator::Add
-                | BinaryOperator::Sub
-                | BinaryOperator::Mul
-                | BinaryOperator::Div
-                | BinaryOperator::Rem
-                | BinaryOperator::Max => {
-                    self.type_check_top(is_in_sequence, Type::Int, span)?;
-                    self.type_check_top(is_in_sequence, Type::Int, span)?;
-                    self.type_stack.push(BoundType {
-                        t: Type::Int,
-                        span: *span,
-                    });
-                }
-                BinaryOperator::Gt | BinaryOperator::Lt => {
-                    self.type_check_top(is_in_sequence, Type::Int, span)?;
-                    self.type_check_top(is_in_sequence, Type::Int, span)?;
-                    self.type_stack.push(BoundType {
-                        t: Type::Bool,
-                        span: *span,
-                    });
-                }
-                BinaryOperator::Eq => {
-                    let t = self.type_check_top(is_in_sequence, Type::Int, span)?;
-                    self.type_check_top(is_in_sequence, t.unwrap().t, span)?;
-                    self.type_stack.push(BoundType {
-                        t: Type::Bool,
-                        span: *span,
-                    });
-                }
-                BinaryOperator::And | BinaryOperator::Or => {
-                    self.type_check_top(is_in_sequence, Type::Bool, span)?;
-                    self.type_check_top(is_in_sequence, Type::Bool, span)?;
-                    self.type_stack.push(BoundType {
-                        t: Type::Bool,
-                        span: *span,
-                    });
-                }
-            },
-            Operation::Unary(op, span) => match op {
-                UnaryOperator::Neg => {
-                    self.type_check_top(is_in_sequence, Type::Bool, span)?;
-                    self.type_stack.push(BoundType {
-                        t: Type::Bool,
-                        span: *span,
-                    });
-                }
-            },
-            Operation::NoOp => {}
-            Operation::Filter(span) => {
-                if let Type::Function(inputs, _) = self
-                    .type_check_top(
-                        is_in_sequence,
-                        Type::Function(vec![Type::Any], vec![Type::Bool]),
-                        span,
-                    )?
-                    .unwrap()
-                    .t
-                {
-                    let list = self
-                        .type_check_top(
-                            is_in_sequence,
-                            Type::List(Box::new(inputs[0].clone())),
-                            span,
-                        )?
-                        .unwrap();
-                    self.type_stack.push(BoundType {
-                        t: list.t,
-                        span: *span,
-                    });
-                } else {
-                    panic!("Incorrectly parsed filter");
-                }
-            }
-            Operation::Map(span) => {
-                if let Type::Function(inputs, outputs) = self
-                    .type_check_top(
-                        is_in_sequence,
-                        Type::Function(vec![Type::Any], vec![Type::Any]),
-                        span,
-                    )?
-                    .unwrap()
-                    .t
-                {
-                    self.type_check_top(
-                        is_in_sequence,
-                        Type::List(Box::new(inputs[0].clone())),
-                        span,
-                    )?
-                    .unwrap();
-                    self.type_stack.push(BoundType {
-                        t: Type::List(Box::new(outputs[0].clone())),
-                        span: *span,
-                    });
-                } else {
-                    panic!();
-                }
-            }
-            Operation::Apply(span) => {
-                if let Type::Function(inputs, _) = self
-                    .type_check_top(
-                        is_in_sequence,
-                        Type::Function(vec![Type::Any], vec![]),
-                        span,
-                    )?
-                    .unwrap()
-                    .t
-                {
-                    self.type_check_top(
-                        is_in_sequence,
-                        Type::List(Box::new(inputs[0].clone())),
-                        span,
-                    )?;
-                }
-            }
-            Operation::Len(span) => {
-                self.type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?;
-                self.type_stack.push(BoundType {
-                    t: Type::Int,
-                    span: *span,
-                });
-            }
-            Operation::Fold(span) => {
-                let acc = self
-                    .type_check_top(is_in_sequence, Type::Any, span)?
-                    .unwrap();
-
-                self.type_check_top(
-                    is_in_sequence,
-                    Type::Function(vec![Type::Any, Type::Any], vec![acc.clone().t]),
-                    span,
-                )?
-                .unwrap();
-
-                self.type_check_top(is_in_sequence, Type::List(Box::new(acc.clone().t)), span)?
-                    .unwrap();
-
-                self.type_stack.push(BoundType {
-                    t: acc.clone().t,
-                    span: *span,
-                });
-            }
-            Operation::Concat(span) => {
-                if let Type::List(e1) = self
-                    .type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?
-                    .unwrap()
-                    .t
-                {
-                    if let Type::List(e2) = self
-                        .type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?
-                        .unwrap()
-                        .t
-                    {
-                        if e1 == e2 {
-                            self.type_stack.push(BoundType {
-                                t: Type::List(e1),
-                                span: *span,
-                            });
-                        } else {
-                            self.type_stack.push(BoundType {
-                                t: Type::List(Box::new(Type::Any)),
-                                span: *span,
-                            });
-                        }
-                    } else {
-                        panic!("Messed up type checking concat");
-                    }
-                } else {
-                    panic!("Messed up type checking concat");
-                }
-            }
-            Operation::Head(span) | Operation::Tail(span) => {
-                if let Type::List(el) = self
-                    .type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?
-                    .unwrap()
-                    .t
-                {
-                    self.type_stack.push(BoundType {
-                        t: *el,
-                        span: *span,
-                    });
-                }
-            }
-            Operation::Last(span) | Operation::Init(span) => {
-                let list = self
-                    .type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?
-                    .unwrap()
-                    .t;
-                self.type_stack.push(BoundType {
-                    t: list,
-                    span: *span,
-                });
-            }
-            Operation::Cons(span) => {
-                let e1 = self
-                    .type_check_top(is_in_sequence, Type::Any, span)?
-                    .unwrap()
-                    .t;
-                let e2 = self
-                    .type_check_top(is_in_sequence, Type::Any, span)?
-                    .unwrap()
-                    .t;
-
-                if e1 == e2 {
-                    self.type_stack.push(BoundType {
-                        t: Type::List(Box::new(e1)),
-                        span: *span,
-                    });
-                } else {
-                    self.type_stack.push(BoundType {
-                        t: Type::List(Box::new(Type::Any)),
-                        span: *span,
-                    });
-                }
-            }
-            Operation::If(span) => {
-                //TODO: Could pull out the then and else spans for clearer error reporting
-                if let Type::Function(else_inputs, else_outputs) = self
-                    .type_check_top(is_in_sequence, Type::Any, span)?
-                    .unwrap()
-                    .t
-                {
-                    if let Type::Function(then_inputs, then_outputs) = self
-                        .type_check_top(is_in_sequence, Type::Any, span)?
-                        .unwrap()
-                        .t
-                    {
-                        self.type_check_top(is_in_sequence, Type::Bool, span)?;
-
-                        if then_inputs.len() != else_inputs.len() {
-                            return Err(TypeError::IfBranchInputMismatch(
-                                then_inputs,
-                                else_inputs,
-                                *span,
-                            ));
-                        }
-                        for i in 0..then_inputs.len() {
-                            if let Err(_) = TypeChecker::check_type(
-                                then_inputs[i].clone(),
-                                Some(BoundType {
-                                    t: else_inputs[i].clone(),
-                                    span: *span,
-                                }),
-                                *span,
-                            ) {
-                                return Err(TypeError::IfBranchInputMismatch(
-                                    then_inputs,
-                                    else_inputs,
-                                    *span,
-                                ));
-                            }
-                        }
-
-                        if then_outputs.len() != else_outputs.len() {
-                            return Err(TypeError::IfBranchOutputMismatch(
-                                then_outputs,
-                                else_outputs,
-                                *span,
-                            ));
-                        }
-                        for i in 0..then_outputs.len() {
-                            if let Err(_) = TypeChecker::check_type(
-                                then_outputs[i].clone(),
-                                Some(BoundType {
-                                    t: else_outputs[i].clone(),
-                                    span: *span,
-                                }),
-                                *span,
-                            ) {
-                                return Err(TypeError::IfBranchOutputMismatch(
-                                    then_outputs,
-                                    else_outputs,
-                                    *span,
-                                ));
-                            }
-                        }
-                        for input in then_inputs {
-                            self.type_check_top(is_in_sequence, input, span)?;
-                        }
-                        for output in then_outputs {
-                            self.type_stack.push(BoundType {
-                                t: output,
-                                span: *span,
-                            });
-                        }
-                    } else {
-                        panic!("If parsed wrong");
-                    }
-                } else {
-                    panic!("If parsed wrong");
-                }
-            }
-            Operation::While(span) => {
-                if let Type::Function(_, _) = self
-                    .type_check_top(is_in_sequence, Type::Any, span)?
-                    .unwrap()
-                    .t
-                {
-                    if let Type::Function(_, _) = self
-                        .type_check_top(
-                            is_in_sequence,
-                            Type::Function(vec![Type::Any], vec![Type::Any, Type::Bool]),
-                            span,
-                        )?
-                        .unwrap()
-                        .t
-                    {
-                        return Ok(());
-                    } else {
-                        panic!("While parsed wrong");
-                    }
-                } else {
-                    panic!("While parsed wrong");
-                }
-                // self.type_check_top(is_in_sequence, Type::Seq, span)?;
-            }
-            Operation::Sort(span) | Operation::Reverse(span) => {
-                let list = self
-                    .type_check_top(is_in_sequence, Type::List(Box::new(Type::Any)), span)?
-                    .unwrap();
-                self.type_stack.push(BoundType {
-                    t: list.t,
-                    span: *span,
-                });
-            }
-            Operation::DumpTypeStack(span) => {
-                return Err(TypeError::DumpTypeStack(
-                    TypeStack {
-                        type_stack: self.type_stack.clone(),
-                    },
-                    *span,
-                ));
-            }
-        })
-    }
-
-    fn type_check_top(
-        &mut self,
-        is_in_sequence: bool,
-        expected_type: Type,
-        span: &Span,
-    ) -> Result<Option<BoundType>, TypeError> {
-        self.infer_type_stack(is_in_sequence, expected_type.clone());
-        let top = self.type_stack.pop();
-        TypeChecker::check_type(expected_type.clone(), top.clone(), *span)?;
-        Ok(top)
-    }
-
-    fn infer_type_stack(&mut self, is_in_sequence: bool, inferred_type: Type) {
-        if is_in_sequence && self.type_stack.is_empty() {
-            self.type_stack.push(BoundType {
-                t: inferred_type,
-                span: Span {
-                    row: 0,
-                    col: 0,
-                    len: 0,
-                },
-            });
-        }
-    }
-
-    fn new() -> TypeChecker {
-        return TypeChecker {
-            type_stack: vec![],
-            known_functions: HashMap::new(),
-            generics: HashMap::new(),
-        };
-    }
-    fn apply(
-        &mut self,
-        op: &Operation,
-        inputs: &mut Vec<Type>,
-        outputs: &mut Vec<Type>,
-    ) -> Result<(), TypeError> {
-        let signature = self.get_signature(op);
-        //If it's a fresh slate then just add the inputs and outputs
-        // println!("op: {:?}, sig: {:?}", op, signature);
-        if inputs.is_empty() && outputs.is_empty() {
-            *inputs = signature.left;
-            *outputs = signature.right;
-            // println!("inputs: {:?}", inputs);
-            // println!("outputs: {:?}", outputs);
-            return Ok(());
-        }
-        //after dup we have [any] -- [any any] // need generics to allow parameterization, we know that the two Any's are the same so if one is inferred we know the other
-        //after * we want [int] -- [int]
-
-        //otherwise we need to simulate running the operation
-        for arg in signature.left.clone() {
-            //If there's a type in the outputs, take it and check it's compatible
-            if outputs.len() > 0 {
-                let output = outputs.pop().unwrap();
-                TypeChecker::check_type(
-                    arg,
-                    Some(BoundType {
-                        t: output,
-                        span: get_span(op),
-                    }),
-                    get_span(op),
-                )?;
-                //If we're here then it's a match
-            } else {
-                //Else start pulling from the inputs
-                let input = inputs.pop();
-                match input {
-                    Some(t) => {
-                        TypeChecker::check_type(
-                            arg,
-                            Some(BoundType {
-                                t,
-                                span: get_span(op),
-                            }),
-                            get_span(op),
-                        )?;
-                    }
-                    None => {
-                        //we need to infer
-                        inputs.push(arg);
-                    }
-                }
-            }
-        }
-
-        //Then put the signature outputs in the outputs for the next op
-        for ret in signature.right.clone() {
-            outputs.push(ret);
-        }
-        // println!("inputs: {:?}", inputs);
-        // println!("outputs: {:?}", outputs);
-
-        return Ok(());
-    }
-}
-
-fn parse_seq_type(ops: &Vec<Operation>) -> (bool, Option<Type>) {
-    let mut list = true;
-    let mut list_type: Option<Type> = None;
-    for op in ops {
-        if list {
-            match op {
-                Operation::IntegerLiteral(_, _) => match list_type.clone() {
-                    Some(el_type) => {
-                        if el_type != Type::Int {
-                            list_type = Some(Type::Any)
-                        }
-                    }
-                    None => list_type = Some(Type::Int),
-                },
-                Operation::BooleanLiteral(_, _) => match list_type.clone() {
-                    Some(el_type) => {
-                        if el_type != Type::Bool {
-                            list_type = Some(Type::Any)
-                        }
-                    }
-                    None => list_type = Some(Type::Bool),
-                },
-                // Operation::StringLiteral(_, _) => match list_type.clone() {
-                //     Some(el_type) => {
-                //         if el_type != Type::String {
-                //             list_type = Some(Type::Any)
-                //         }
-                //     }
-                //     None => list_type = Some(Type::String),
-                // },
-                Operation::Sequence(ops, _) => {
-                    let sub_type = parse_seq_type(ops);
-                    if !sub_type.0 || sub_type.1.is_none() {
-                        return (false, None);
-                    }
-                    return (list, Some(Type::List(Box::new(sub_type.1.unwrap()))));
-                }
-                _ => list = false,
-            }
-        }
-    }
-    (list, list_type)
 }
 
 fn get_span(op: &Operation) -> Span {
@@ -1948,7 +3146,8 @@ fn get_span(op: &Operation) -> Span {
         | Operation::Print(span)
         | Operation::If(span)
         | Operation::While(span)
-        | Operation::Sequence(_, span)
+        | Operation::List(_, span)
+        | Operation::Lambda(_, span)
         | Operation::Run(span)
         | Operation::IntegerLiteral(_, span)
         | Operation::BooleanLiteral(_, span)
@@ -1968,6 +3167,9 @@ fn get_span(op: &Operation) -> Span {
         | Operation::Cons(span)
         | Operation::Sort(span)
         | Operation::DumpTypeStack(span)
+        | Operation::Nth(span)
+        | Operation::Partial(span)
+        | Operation::Range(span)
         | Operation::Reverse(span) => *span,
 
         Operation::NoOp => todo!(),
@@ -2154,8 +3356,8 @@ impl Interpreter {
     }
 
     fn interpret_operation(&mut self, operation: &Operation) {
-        // println!("{:?}", self.stack);
-        // println!("{:?}", operation);
+        //println!("{:?}", self.stack);
+        //println!("{}", operation);
         match operation {
             Operation::NoOp => {}
             Operation::IntegerLiteral(i, _) => self.stack.push(Value::Integer(*i)),
@@ -2200,11 +3402,11 @@ impl Interpreter {
                         };
                     }
                     BinaryOperator::Or => {
-                        match (left_val, right_val) {
+                        match (left_val.clone(), right_val.clone()) {
                             (Value::Boolean(l), Value::Boolean(r)) => {
                                 self.stack.push(Value::Boolean(r || l))
                             }
-                            _ => panic!(),
+                            _ => panic!("Cannot or {} and {}", left_val, right_val),
                         };
                     }
                     BinaryOperator::Max => {
@@ -2258,7 +3460,9 @@ impl Interpreter {
                 let val = self.stack.pop().unwrap();
                 println!("{}", val);
             }
-            Operation::Sequence(ops, _) => self.stack.push(Value::Seq(ops.to_vec())),
+            Operation::List(ops, _) | Operation::Lambda(ops, _) => {
+                self.stack.push(Value::Seq(ops.to_vec()))
+            }
             Operation::Run(_) => {
                 if let Value::Seq(ops) = self.stack.pop().unwrap() {
                     for op in ops {
@@ -2268,32 +3472,34 @@ impl Interpreter {
             }
             Operation::Map(_) => {
                 if let Value::Seq(operations) = self.stack.pop().unwrap() {
-                    if let Value::Seq(operands) = self.stack.pop().unwrap() {
-                        let mut results: Vec<Operation> = vec![];
-                        for operand in operands.iter().rev() {
-                            self.interpret_operation(&operand);
+                    match self.stack.pop().unwrap() {
+                        Value::Seq(operands) => {
+                            let mut results: Vec<Operation> = vec![];
+                            for operand in operands.iter().rev() {
+                                self.interpret_operation(&operand);
 
-                            for operation in &operations {
-                                self.interpret_operation(&operation)
-                            }
+                                for operation in &operations {
+                                    self.interpret_operation(&operation)
+                                }
 
-                            let result = self.stack.pop().unwrap();
-                            match result.clone() {
-                                Value::Seq(ops) => {
-                                    results.push(Operation::Sequence(ops, Span::empty()));
-                                }
-                                Value::Integer(i) => {
-                                    results.push(Operation::IntegerLiteral(i, Span::empty()));
-                                }
-                                Value::Boolean(b) => {
-                                    results.push(Operation::BooleanLiteral(b, Span::empty()));
+                                let result = self.stack.pop().unwrap();
+                                match result.clone() {
+                                    Value::Seq(ops) => {
+                                        results.push(Operation::List(ops, Span::empty()));
+                                    }
+                                    Value::Integer(i) => {
+                                        results.push(Operation::IntegerLiteral(i, Span::empty()));
+                                    }
+                                    Value::Boolean(b) => {
+                                        results.push(Operation::BooleanLiteral(b, Span::empty()));
+                                    }
                                 }
                             }
+                            results.reverse();
+                            self.stack.push(Value::Seq(results));
                         }
-                        results.reverse();
-                        self.stack.push(Value::Seq(results));
-                    } else {
-                        todo!()
+                        Value::Integer(i) => panic!("tried mapping with an int {}", i),
+                        Value::Boolean(b) => panic!("tried mapping with a bool {}", b),
                     }
                 } else {
                     todo!()
@@ -2421,7 +3627,7 @@ impl Interpreter {
                 let op = match top {
                     Value::Integer(i) => Operation::IntegerLiteral(i, Span::empty()),
                     Value::Boolean(b) => Operation::BooleanLiteral(b, Span::empty()),
-                    Value::Seq(ops) => Operation::Sequence(ops, Span::empty()),
+                    Value::Seq(ops) => Operation::List(ops, Span::empty()),
                 };
                 let rest = self.stack.pop().unwrap();
                 match rest {
@@ -2489,7 +3695,7 @@ impl Interpreter {
                             Operation::IntegerLiteral(i, _) => values.push(Value::Integer(i)),
                             Operation::BooleanLiteral(b, _) => values.push(Value::Boolean(b)),
                             //Operation::StringLiteral(s, _) => values.push(Value::String(s)),
-                            _ => panic!("Cannot sort {:?}", op),
+                            _ => panic!("Cannot sort {}", op),
                         }
                     }
                     values.sort();
@@ -2520,7 +3726,7 @@ impl Interpreter {
                             Operation::IntegerLiteral(i, _) => values.push(Value::Integer(i)),
                             Operation::BooleanLiteral(b, _) => values.push(Value::Boolean(b)),
                             //Operation::StringLiteral(s, _) => values.push(Value::String(s)),
-                            _ => panic!("Cannot sort {:?}", op),
+                            _ => panic!("Cannot sort {}", op),
                         }
                     }
                     let mut sorted_ops: Vec<Operation> = vec![];
@@ -2534,10 +3740,54 @@ impl Interpreter {
                             }
                             // Value::String(s) => sorted_ops
                             //     .push(Operation::StringLiteral(s.to_string(), span.to_owned())),
-                            _ => panic!("Cannot sort {}", value),
+                            _ => panic!("Cannot reverse {}", value),
                         }
                     }
                     self.stack.push(Value::Seq(sorted_ops));
+                }
+            }
+            Operation::Nth(_) => {
+                if let Value::Integer(index) = self.stack.pop().unwrap() {
+                    if let Value::Seq(els) = self.stack.pop().unwrap() {
+                        let op = els.iter().rev().nth(index as usize).unwrap().clone();
+                        match op {
+                            Operation::IntegerLiteral(i, _) => self.stack.push(Value::Integer(i)),
+                            Operation::BooleanLiteral(b, _) => self.stack.push(Value::Boolean(b)),
+                            //Operation::StringLiteral(s, _) => values.push(Value::String(s)),
+                            _ => panic!("Cannot nth {}", op),
+                        }
+                    }
+                }
+            }
+            Operation::Partial(span) => {
+                if let Value::Seq(mut ops) = self.stack.pop().unwrap() {
+                    let arg = self.stack.pop().unwrap();
+                    match arg {
+                        Value::Integer(i) => {
+                            ops.insert(0, Operation::IntegerLiteral(i, *span));
+                            self.stack.push(Value::Seq(ops));
+                        }
+                        Value::Boolean(b) => {
+                            ops.insert(0, Operation::BooleanLiteral(b, *span));
+                            self.stack.push(Value::Seq(ops));
+                        }
+                        Value::Seq(s) => todo!(),
+                    }
+                    //println!("{:#?}", self.stack);
+                } else {
+                    panic!("Parsed partial incorrectly")
+                }
+            }
+            Operation::Range(span) => {
+                if let Value::Integer(upper) = self.stack.pop().unwrap() {
+                    if let Value::Integer(lower) = self.stack.pop().unwrap() {
+                        let mut ops: Vec<Operation> = vec![];
+                        for i in lower..upper {
+                            ops.push(Operation::IntegerLiteral(i, *span));
+                        }
+
+                        self.stack.push(Value::Seq(ops));
+                    }
                 }
             }
         }
@@ -2562,7 +3812,7 @@ impl Interpreter {
 }
 
 //TODO: Have a map of index -> file_name
-fn display_type_error(error: TypeError, file_name: String, contents: &String) {
+fn display_type_error(error: &TypeError, file_name: String, contents: &String) {
     if let TypeError::DumpTypeStack(_, span) = &error {
         print!("{} ", format!("{}", "Halting execution").yellow());
         println!("at {}:{}", file_name, span);
@@ -2574,8 +3824,11 @@ fn display_type_error(error: TypeError, file_name: String, contents: &String) {
         TypeError::TypeMismatch(_, actual, span) => {
             println!(" at {}:{}", file_name, span);
             print_span(span, contents, HighlightColor::RED);
-            println!("\n{} introduced at {}:{}", actual.t, file_name, actual.span);
-            print_span(actual.span, contents, HighlightColor::YELLOW);
+            println!(
+                "\n`{}` introduced at {}:{}",
+                actual.t, file_name, actual.span
+            );
+            print_span(&actual.span, contents, HighlightColor::YELLOW);
         }
         TypeError::EmptyStack(_, span) => {
             println!(" at {}:{}", file_name, span);
@@ -2596,7 +3849,7 @@ fn display_type_error(error: TypeError, file_name: String, contents: &String) {
                     "\n[{}] {} introduced at {}:{}",
                     stack_index, bound_type.t, file_name, bound_type.span
                 );
-                print_span(bound_type.clone().span, contents, HighlightColor::RED);
+                print_span(&bound_type.span, contents, HighlightColor::RED);
                 stack_index += 1;
             }
         }
@@ -2607,9 +3860,13 @@ fn display_type_error(error: TypeError, file_name: String, contents: &String) {
                     "\n[{}] `{}` introduced at {}:{}",
                     stack_index, bound_type.t, file_name, bound_type.span
                 );
-                print_span(bound_type.clone().span, contents, HighlightColor::YELLOW);
+                print_span(&bound_type.span, contents, HighlightColor::YELLOW);
                 stack_index += 1;
             }
+        }
+        TypeError::UnknownIdentifier(_, span) => {
+            println!(" at {}:{}", file_name, span);
+            print_span(span, contents, HighlightColor::RED);
         }
     }
 }
@@ -2619,11 +3876,11 @@ fn display_parse_error(error: ParseError, file_name: String, contents: &String) 
     match error {
         ParseError::UnknownIdentifier(_, span) => {
             println!("{} at {}:{}", error, file_name, span);
-            print_span(span, contents, HighlightColor::RED);
+            print_span(&span, contents, HighlightColor::RED);
         }
         ParseError::UnexpectedToken(_, _, span) => {
             println!("{} at {}:{}", error, file_name, span);
-            print_span(span, contents, HighlightColor::RED);
+            print_span(&span, contents, HighlightColor::RED);
         }
     }
 }
@@ -2634,7 +3891,7 @@ enum HighlightColor {
 }
 
 use colored::Colorize;
-fn print_span(span: Span, contents: &String, highlight_color: HighlightColor) {
+fn print_span(span: &Span, contents: &String, highlight_color: HighlightColor) {
     let line = contents.lines().nth(span.row - 1).unwrap();
     let pre = &line[0..span.col - 1];
     let error = &line[span.col - 1..span.col + span.len - 1];
@@ -2686,13 +3943,31 @@ fn main() {
                     }
                     if !disable_type_check {
                         now = Instant::now();
-                        let mut type_checker = TypeChecker::new();
-                        if let Err(error) = type_checker.type_check_parsed_program(&program) {
-                            if measure {
-                                println!("Type Checking took {}ms", now.elapsed().as_millis());
+                        // let mut type_checker = TypeChecker::new();
+                        // if let Err(error) = type_checker.type_check_parsed_program(&program) {
+                        //     if measure {
+                        //         println!("Type Checking took {}ms", now.elapsed().as_millis());
+                        //     }
+                        //     display_type_error(error, file_path.to_string(), &contents);
+                        //     return;
+                        // }
+                        let mut binder = Binder::new();
+                        match binder.bind(&program) {
+                            Ok(_) => {
+                                if measure {
+                                    println!("Type Checking took {}ms", now.elapsed().as_millis());
+                                }
                             }
-                            display_type_error(error, file_path.to_string(), &contents);
-                            return;
+                            Err(errors) => {
+                                if measure {
+                                    println!("Type Checking took {}ms", now.elapsed().as_millis());
+                                }
+                                for error in errors {
+                                    display_type_error(&error, file_path.to_string(), &contents);
+                                    println!();
+                                }
+                                return;
+                            }
                         }
                         if measure {
                             println!("Type Checking took {}ms", now.elapsed().as_millis());

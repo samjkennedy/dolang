@@ -1,1 +1,1 @@
-[dup *] ???
+3 4 over print print print

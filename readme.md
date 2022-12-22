@@ -45,23 +45,24 @@ Stack: [Int]
 
 ### Functional Programming
 
-Do allows the pushing of arbitrary functions to the stack, surround a sequence of operations with `[]` to do so:
+Do allows the pushing of arbitrary functions to the stack, surround a sequence of operations with `()` to do so:
 
 ```
-[dup *]
+(dup *)
 ```
 This does not run the function but the top of the stack now points at a function that will duplicate the top of the stack and multiply it with itself. This is the square function. It can be applied to a list of integers with the `map` intrinsic:
 
 ```
-[1 2 3 4 5] [dup *] map
+[1 2 3 4 5] 
+    (dup *) map
 ```
 
 After executing map, the stack will contain a list of the first 5 square numbers, they can be printed to the console with the `apply` intrinsic:
 
 ```
 [1 2 3 4 5] 
-    [dup *] map
-    [print] apply
+    (dup *) map
+    (print) apply
 ```
 
 ```
@@ -76,13 +77,13 @@ After executing map, the stack will contain a list of the first 5 square numbers
 
 ```
 [true false true false false] 
-    [dup *] map
-    [print] apply
+    (dup *) map
+    (print) apply
 ```
 
 ```
 ERROR: Type mismatch, expected 'list of int' but the top of the stack was `list of bool` at .\examples\example.do:2:13
-2:        [dup *] map
+2:        (dup *) map
 
 list of bool introduced at .\examples\example.do:1:1
 1:    [true false true false false] 
@@ -92,14 +93,14 @@ list of bool introduced at .\examples\example.do:1:1
 
 #### Stack Manipulation
 
-| Name    | Signature        | Description                                                        |
-| ------- | ---------------- | ------------------------------------------------------------------ |
-| `print` | `a b -- a`       | prints the value on top of the stack and remove it from the stack. |
-| `swap`  | `a b -- b a`     | swaps the 2 values on top of the stack.                            |
-| `pop`   | `a b -- a`       | pops the value on top of the stack.                                |
-| `dup`   | `a -- a a`       | duplicates the value on top of the stack.                          |
-| `over`  | `a b -- a b a`   | copies the value below the top of the stack                        |
-| `rot`   | `a b c -- b c a` | rotates the top three stack values.                                |
+| Name    | Signature        | Description                                                         |
+| ------- | ---------------- | ------------------------------------------------------------------- |
+| `print` | `a b -- a`       | prints the value on top of the stack and removes it from the stack. |
+| `swap`  | `a b -- b a`     | swaps the 2 values on top of the stack.                             |
+| `pop`   | `a b -- a`       | pops the value on top of the stack.                                 |
+| `dup`   | `a -- a a`       | duplicates the value on top of the stack.                           |
+| `over`  | `a b -- a b a`   | copies the value below the top of the stack                         |
+| `rot`   | `a b c -- b c a` | rotates the top three stack values.                                 |
 
 #### List Functions
 
@@ -111,13 +112,15 @@ list of bool introduced at .\examples\example.do:1:1
 | `fold`    | `[a] fn(a a -- b) b -- b`    | reduces the list 2 below the stack using the reduce function below the top into the accumulator at the top of the stack. |
 | `len`     | `[a] -- int`                 | pops the list off the top of the stack and pushes its length.                                                            |
 | `concat`  | `[a] [a] -- [a]`             | concatenates two lists of the same type on the top of the stack into a single list.                                      |
-| `head`    | `[a] -- a`                   | Pops the list on top of the stack and pushes its top element onto the stack.                                             |
-| `last`    | `[a] -- a`                   | Pops the list on top of the stack and pushes its bottom element onto the stack.                                          |
-| `tail`    | `[a] -- [a]`                 | Pops the list on top of the stack and pushes a list containing all its elements but the top.                             |
-| `init`    | `[a] -- [a]`                 | Pops the list on top of the stack and pushes a list containing all its elements but the bottom.                          |
-| `cons`    | `a a -- [a]`                 | Pops two values from the top of the stack and pushes a list containing those two elements.                               |
-| `sort`    | `[int\|bool] -- [int\|bool]` | Pops the list on top of the stack and pushes it sorted. Only applicable to int lists and bool lists for now.             |
-| `reverse` | `[int\|bool] -- [int\|bool]` | Pops the list on top of the stack and pushes it reversed. Only applicable to int lists and bool lists for now.           |
+| `head`    | `[a] -- a`                   | pops the list on top of the stack and pushes its top element onto the stack.                                             |
+| `last`    | `[a] -- a`                   | pops the list on top of the stack and pushes its bottom element onto the stack.                                          |
+| `tail`    | `[a] -- [a]`                 | pops the list on top of the stack and pushes a list containing all its elements but the top.                             |
+| `init`    | `[a] -- [a]`                 | pops the list on top of the stack and pushes a list containing all its elements but the bottom.                          |
+| `cons`    | `a a -- [a]`                 | pops two values from the top of the stack and pushes a list containing those two elements.                               |
+| `sort`    | `[int\|bool] -- [int\|bool]` | pops the list on top of the stack and pushes it sorted. Only applicable to int lists and bool lists for now.             |
+| `reverse` | `[int\|bool] -- [int\|bool]` | pops the list on top of the stack and pushes it reversed. Only applicable to int lists and bool lists for now.           |
+| `nth`     | `[a] int -- a`               | pops an int index and a list off the stack and pushes the element at that index.                                         |
+| `partial` | `a fn(a... -- ...)`          | pops the first argument and a function off the stack and returns a new function with the argument partially applied.     |
 
 ### Functions
 
@@ -147,7 +150,6 @@ ERROR: Expected 'any' but the stack was empty at .\examples\example.do:2:5
 2:        dup *
 ```
 
-
 ```
 define square ( int -- bool )
     dup *
@@ -169,8 +171,8 @@ define square ( int -- int )
 end
 
 [1 2 3 4 5]
-    [square] map
-    [print] apply
+    (square) map
+    (print) apply
 ```
 
 ```
@@ -181,22 +183,31 @@ end
 1
 ```
 
+The types in the signature are declared as their own little stack, types are pushed onto the stack top -> bottom, and the `list` type pops a type off and forms a `list of` type with it. For example:
+
+```
+define foo (int list bool -- bool list int)
+    ...
+end
+```
+This function expects the stack to contain an `int list` at the top followed by a `bool`, and will leave on the top of the stack a `bool list` followed by an int. That is that left = top of the stack and right = bottom of the stack.
+
 ## Examples
 
 Finding the greatest sum of a list of integers and printing it:
 
 ```
 define flatten (list of list of any -- list of any)
-    [concat] [] fold
+    (concat) [] fold
 end
 
 define sum (list of int -- int)
-    [+] 0 fold
+    (+) 0 fold
 end
 
 [[1 2] [1 3]]
-    [sum] map
+    (sum) map
     flatten
-    [max] 0 fold
+    (max) 0 fold
     print
 ```
