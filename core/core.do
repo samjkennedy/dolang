@@ -1,12 +1,17 @@
-define empty? (list of any -- bool)
+define empty? (a list -- bool)
     len 0 =
 end
 
-define not-empty? (list of any -- bool)
+define not-empty? (a list -- bool)
     empty? !
 end
 
-define flatten (list of list of any -- list of any)
+define contains? (a a list -- bool)
+    (=) partial map
+    (|) false fold
+end
+
+define flatten (a list list -- a list)
     [concat] [] fold
 end
 
@@ -16,9 +21,4 @@ end
 
 define sum (list of int -- int)
     [+] 0 fold
-end
-
-define flatmap [[any]] fn([any] -- any) -- [any] in
-    swap flatten
-    swap map
 end

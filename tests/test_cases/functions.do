@@ -1,8 +1,8 @@
-define sum (list of int -- int)
+define sum (int list -- int)
     (+) 0 fold
 end
 
-define avg (list of int -- int)
+define avg (int list -- int)
     dup len swap #[Len List]
     sum          #[Len Sum]
     swap         #[Sum Len]
@@ -19,15 +19,15 @@ end
     avg 
     print
 
-define product (list of int -- int)
+define product (int list -- int)
     (*) 1 fold
 end
 
-define sum-all-over-two (list of int -- int)
+define sum-all-over-two (int list -- int)
     (2 >) filter sum 
 end
 
-define flatten (list of list of any -- list of any)
+define flatten (<T> list list -- <T> list)
     (concat) [] fold
 end
 

@@ -120,6 +120,7 @@ list of bool introduced at .\examples\example.do:1:1
 | `sort`    | `[int\|bool] -- [int\|bool]` | pops the list on top of the stack and pushes it sorted. Only applicable to int lists and bool lists for now.             |
 | `reverse` | `[int\|bool] -- [int\|bool]` | pops the list on top of the stack and pushes it reversed. Only applicable to int lists and bool lists for now.           |
 | `nth`     | `[a] int -- a`               | pops an int index and a list off the stack and pushes the element at that index.                                         |
+| `partial` | `a fn(a... -- ...)`          | pops the first argument and a function off the stack and returns a new function with the argument partially applied.     |
 
 ### Functions
 
@@ -148,7 +149,6 @@ end
 ERROR: Expected 'any' but the stack was empty at .\examples\example.do:2:5
 2:        dup *
 ```
-
 
 ```
 define square ( int -- bool )
@@ -182,6 +182,15 @@ end
 4
 1
 ```
+
+The types in the signature are declared as their own little stack, types are pushed onto the stack top -> bottom, and the `list` type pops a type off and forms a `list of` type with it. For example:
+
+```
+define foo (int list bool -- bool list int)
+    ...
+end
+```
+This function expects the stack to contain an `int list` at the top followed by a `bool`, and will leave on the top of the stack a `bool list` followed by an int. That is that left = top of the stack and right = bottom of the stack.
 
 ## Examples
 
